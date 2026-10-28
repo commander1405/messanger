@@ -12,8 +12,8 @@ export const CONFIG = {
   BASE_PATH: "/messanger",
 
   // از Supabase Dashboard → Settings → API
-  SUPABASE_URL: "", // مثال: https://xxxxx.supabase.co
-  SUPABASE_ANON_KEY: "", // publishable / legacy anon key
+  SUPABASE_URL: "https://eiofkondgzhiravpjcid.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_oCm-RjwuJvN2fEmLITk9BQ_LCMb3pIt",
 
   // احراز هویت
   // phone نیاز به SMS Provider در Supabase Auth دارد
