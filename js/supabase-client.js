@@ -2,9 +2,15 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 import { CONFIG, isConfigured } from "../config.js";
 
 let client = null;
+const STORAGE_KEY = "dk-messenger-auth-v3";
 
-// storageKey نسخه‌دار تا قفل/نشست خراب قبلی باقی نماند
-const STORAGE_KEY = "dk-messenger-auth-v2";
+export function getAuthStorageKey() {
+  return STORAGE_KEY;
+}
+
+export function resetSupabaseClient() {
+  client = null;
+}
 
 export function getSupabase() {
   if (!isConfigured()) return null;
@@ -16,18 +22,10 @@ export function getSupabase() {
         detectSessionInUrl: false,
         storage: window.localStorage,
         storageKey: STORAGE_KEY,
-        lock: async (_name, _acquireTimeout, fn) => await fn(),
+        // قفل سفارشی GoTrue در بعضی مرورگرها باعث بن‌بست می‌شود
+        lock: async (_name, _acquireTimeout, fn) => fn(),
       },
-      realtime: { params: { eventsPerSecond: 12 } },
     });
   }
   return client;
-}
-
-export function resetSupabaseClient() {
-  client = null;
-}
-
-export function getAuthStorageKey() {
-  return STORAGE_KEY;
 }

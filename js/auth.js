@@ -65,56 +65,45 @@ async function callAuthEdge(payload) {
 }
 
 async function applySessionTokens(body) {
-  const sb = getSupabase();
-  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
   if (!body?.access_token || !body?.refresh_token) {
     throw new Error("نشست معتبر از سرور دریافت نشد.");
   }
 
-  // setSession می‌تواند با listenerهای async در onAuthStateChange قفل شود.
-  // با timeout و در صورت نیاز نوشتن مستقیم storage از بن‌بست جلوگیری می‌کنیم.
-  const sessionPromise = sb.auth.setSession({
+  const { getAuthStorageKey, resetSupabaseClient, getSupabase } = await import("./supabase-client.js");
+  const storageKey = getAuthStorageKey();
+  const expiresIn = Number(body.expires_in || 3600);
+  const payload = {
     access_token: body.access_token,
     refresh_token: body.refresh_token,
-  });
-  const timed = await Promise.race([
-    sessionPromise,
-    new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), 4000)),
-  ]);
-
-  if (timed && timed.__timeout) {
-    // ذخیرهٔ مستقیم نشست در همان storageKey کلاینت
-    const { getAuthStorageKey, resetSupabaseClient } = await import("./supabase-client.js");
-    const storageKey = getAuthStorageKey();
-    const expiresIn = Number(body.expires_in || 3600);
-    const payload = {
-      access_token: body.access_token,
-      refresh_token: body.refresh_token,
-      token_type: body.token_type || "bearer",
-      expires_in: expiresIn,
-      expires_at: Math.floor(Date.now() / 1000) + expiresIn,
-      user: body.user || null,
-    };
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(payload));
-    } catch (_) {
-      /* ignore quota */
-    }
-    resetSupabaseClient();
-    const sb2 = getSupabase();
-    const { data: d2, error: e2 } = await sb2.auth.getSession();
-    if (e2 || !d2.session) {
-      throw new Error("نشست برقرار نشد. صفحه را یک‌بار رفرش کنید.");
-    }
-    return d2.session;
+    token_type: body.token_type || "bearer",
+    expires_in: expiresIn,
+    expires_at: Math.floor(Date.now() / 1000) + expiresIn,
+    user: body.user || null,
+  };
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(payload));
+  } catch (_) {
+    throw new Error("ذخیره نشست در مرورگر ممکن نشد.");
   }
 
-  const { data, error } = timed;
-  if (error) {
-    console.error("setSession failed", error.message);
-    throw new Error("نشست برقرار نشد. صفحه را رفرش کنید و دوباره وارد شوید.");
+  // کلاینت تازه تا از storage بخواند — بدون setSession که قفل می‌شود
+  resetSupabaseClient();
+  const sb = getSupabase();
+  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
+
+  const { data, error } = await sb.auth.getSession();
+  if (error || !data?.session) {
+    // تلاش دوم با setSession به‌عنوان پشتیبان
+    const r = await Promise.race([
+      sb.auth.setSession({
+        access_token: body.access_token,
+        refresh_token: body.refresh_token,
+      }),
+      new Promise((resolve) => setTimeout(() => resolve({ data: { session: null }, error: { message: "timeout" } }), 3000)),
+    ]);
+    if (r?.data?.session) return r.data.session;
+    throw new Error("نشست برقرار نشد. صفحه را رفرش کنید.");
   }
-  if (!data?.session) throw new Error("نشست برقرار نشد.");
   return data.session;
 }
 
