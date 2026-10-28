@@ -334,71 +334,122 @@ async function showMain() {
 
   const sidebar = el("aside", { class: "sidebar" });
   const header = el("div", { class: "sidebar-header" }, [
-    el("img", { class: "logo", src: assetUrl("assets/logo.svg"), alt: "" }),
+    el("img", { class: "logo", src: assetUrl("assets/logo.svg"), alt: "DarkKnight" }),
     el("h2", { text: CONFIG.APP_SHORT }),
-    el("span", { style: "color:var(--text-dim);font-size:0.8rem;margin-left:auto", text: state.profile?.username ? ("@" + state.profile.username) : "" }),
-    el("button", {
-      class: "icon-btn", title: "جستجو و گفتگوی جدید", type: "button",
-      onclick: () => openSearchPanel(),
-    }, [icon("search")]),
-    el("button", {
-      class: "icon-btn", title: "تنظیمات", type: "button",
-      onclick: () => openSettingsPanel(),
-    }, [icon("settings")]),
+    el("span", { class: "user-tag", text: state.profile?.username ? ("@" + state.profile.username) : "" }),
+    el("div", { class: "header-actions" }, [
+      el("button", {
+        class: "icon-btn", title: "جستجو و گفتگوی جدید", type: "button",
+        onclick: () => openSearchPanel(),
+      }, [icon("search")]),
+      el("button", {
+        class: "icon-btn", title: "تنظیمات", type: "button",
+        onclick: () => openSettingsPanel(),
+      }, [icon("settings")]),
+    ]),
   ]);
 
-  const nav = el("div", { class: "nav-tabs" });
-  const tabChats = el("button", { class: "active", type: "button", text: "گفتگوها" });
-  const tabChannels = el("button", { type: "button", text: "کانال‌ها" });
-  nav.append(tabChats, tabChannels);
+  const searchBar = el("div", { class: "search-bar" }, [
+    el("input", {
+      id: "sidebar-search",
+      type: "search",
+      placeholder: "جستجو در گفتگوها…",
+      autocomplete: "off",
+    }),
+  ]);
+
+  const filters = el("div", { class: "filter-chips", id: "filter-chips" });
+  const filterDefs = [
+    { id: "all", label: "همه" },
+    { id: "private", label: "خصوصی" },
+    { id: "group", label: "گروه‌ها" },
+    { id: "channel", label: "کانال‌ها" },
+    { id: "unread", label: "خوانده‌نشده" },
+  ];
+  state.listFilter = state.listFilter || "all";
+  for (const f of filterDefs) {
+    const b = el("button", {
+      type: "button",
+      text: f.label,
+      class: state.listFilter === f.id ? "active" : "",
+    });
+    b.dataset.filter = f.id;
+    b.onclick = async () => {
+      state.listFilter = f.id;
+      for (const x of filters.querySelectorAll("button")) {
+        x.classList.toggle("active", x.dataset.filter === f.id);
+      }
+      if (f.id === "channel") await refreshChannelsDiscover();
+      else await refreshConversations();
+    };
+    filters.append(b);
+  }
 
   const list = el("div", { class: "list", id: "conv-list" });
-  sidebar.append(header, nav, list);
+  sidebar.append(header, searchBar, filters, list);
 
   const chat = el("section", { class: "chat", id: "chat-pane" });
   chat.append(el("div", { class: "empty" }, [
     el("strong", { text: "گفتگویی انتخاب نشده" }),
-    el("span", { text: "از فهرست یک گفتگو را باز کنید یا کاربر جدیدی جستجو کنید." }),
+    el("span", { text: "از فهرست یک گفتگو را باز کنید یا با جستجو گفتگوی جدید بسازید." }),
   ]));
 
   main.append(sidebar, chat);
   shell.append(main);
   root.replaceChildren(shell);
 
-  let mode = "chats";
-  tabChats.onclick = async () => {
-    mode = "chats";
-    tabChats.classList.add("active");
-    tabChannels.classList.remove("active");
-    await refreshConversations();
-  };
-  tabChannels.onclick = async () => {
-    mode = "channels";
-    tabChannels.classList.add("active");
-    tabChats.classList.remove("active");
-    await refreshChannelsDiscover();
-  };
+  const searchInput = $("#sidebar-search");
+  let searchTimer = null;
+  if (searchInput) {
+    searchInput.oninput = () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => applyConversationSearch(searchInput.value), 180);
+    };
+  }
 
   await refreshConversations();
 }
 
+function applyConversationSearch(q) {
+  const list = $("#conv-list");
+  if (!list) return;
+  const query = (q || "").trim().toLowerCase();
+  for (const item of list.querySelectorAll(".list-item")) {
+    const title = (item.dataset.title || "").toLowerCase();
+    const preview = (item.dataset.preview || "").toLowerCase();
+    item.style.display = !query || title.includes(query) || preview.includes(query) ? "" : "none";
+  }
+}
+
 async function refreshConversations() {
   const list = $("#conv-list");
+  if (!list) return;
   setText(list, "در حال بارگذاری...");
   try {
     state.conversations = await listConversations();
+    const f = state.listFilter || "all";
+    let rows = state.conversations || [];
+    if (f === "private") rows = rows.filter((c) => c.type === "private");
+    else if (f === "group") rows = rows.filter((c) => c.type === "group");
+    else if (f === "channel") rows = rows.filter((c) => c.type === "channel");
+    else if (f === "unread") rows = rows.filter((c) => (c.unread || 0) > 0);
+
     list.replaceChildren();
-    if (!state.conversations.length) {
-      list.append(el("div", { class: "empty", text: "هنوز گفتگویی ندارید. با جستجو شروع کنید." }));
+    if (!rows.length) {
+      list.append(el("div", { class: "empty" }, [
+        el("strong", { text: "گفتگویی نیست" }),
+        el("span", { text: f === "unread" ? "پیام خوانده‌نشده‌ای ندارید." : "با جستجو یک گفتگوی جدید شروع کنید." }),
+      ]));
       return;
     }
-    for (const c of state.conversations) {
-      list.append(renderConvItem(c));
-    }
+    for (const c of rows) list.append(renderConvItem(c));
+    const q = $("#sidebar-search")?.value;
+    if (q) applyConversationSearch(q);
   } catch (e) {
-    setText(list, e.message || "خطا در بارگذاری");
+    list.replaceChildren(el("div", { class: "empty", text: e.message || "خطا در بارگذاری گفتگوها" }));
   }
 }
+
 
 async function refreshChannelsDiscover() {
   const list = $("#conv-list");
@@ -453,10 +504,16 @@ async function refreshChannelsDiscover() {
 
 function renderConvItem(c) {
   const title = c.title || "گفتگو";
-  const item = el("div", {
+  const preview = c.last_preview || (
+    c.type === "channel" ? "کانال" : c.type === "group" ? "گروه" : "خصوصی"
+  );
+  const item = el("button", {
     class: `list-item${state.activeId === c.id ? " active" : ""}`,
+    type: "button",
     onclick: () => openConversation(c.id),
   });
+  item.dataset.title = title;
+  item.dataset.preview = preview;
   const av = el("div", { class: "avatar" });
   if (c.avatar_url) av.append(el("img", { src: c.avatar_url, alt: "" }));
   else setText(av, initials(title));
@@ -466,13 +523,14 @@ function renderConvItem(c) {
       el("time", { text: formatTime(c.last_message_at) }),
     ]),
     el("div", { class: "preview" }, [
-      el("span", { text: c.type === "channel" ? "کانال" : c.type === "group" ? "گروه" : "خصوصی" }),
+      el("span", { text: preview }),
       c.unread ? el("span", { class: "badge", text: String(c.unread) }) : null,
     ]),
   ]);
   item.append(av, meta);
   return item;
 }
+
 
 async function openConversation(id) {
   state.activeId = id;

@@ -1,17 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
   <defs>
     <linearGradient id="g" x1="20" y1="10" x2="110" y2="120" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#3a0a0a"/>
-      <stop offset="0.5" stop-color="#8b1515"/>
-      <stop offset="1" stop-color="#1a0505"/>
+      <stop stop-color="#0a2e28"/>
+      <stop offset="0.5" stop-color="#00b894"/>
+      <stop offset="1" stop-color="#06352e"/>
     </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="3" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
   </defs>
-  <rect width="128" height="128" rx="28" fill="#0a0a0c"/>
-  <path filter="url(#glow)" d="M64 18c-18 10-34 18-34 42v22c0 20 14 34 34 40 20-6 34-20 34-40V60c0-24-16-32-34-42z" fill="url(#g)" stroke="#c43c3c" stroke-width="2"/>
-  <path d="M52 58h24M52 70h18" stroke="#f2d6d6" stroke-width="4" stroke-linecap="round"/>
-  <circle cx="64" cy="46" r="6" fill="#f5e6e6"/>
+  <rect width="128" height="128" rx="28" fill="#101214"/>
+  <path d="M64 18c-18 10-34 18-34 42v22c0 20 14 34 34 40 20-6 34-20 34-40V60c0-24-16-32-34-42z" fill="url(#g)" stroke="#00d6a4" stroke-width="2"/>
+  <path d="M52 58h24M52 70h18" stroke="#e8faf5" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="64" cy="46" r="6" fill="#e8faf5"/>
 </svg>

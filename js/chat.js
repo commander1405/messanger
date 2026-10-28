@@ -40,6 +40,23 @@ export async function listConversations() {
       .gt("created_at", c.last_read_at || "1970-01-01")
       .neq("sender_id", user.id);
     c.unread = count || 0;
+
+    const { data: lastRows } = await sb
+      .from("messages")
+      .select("body, attachment_name, attachment_mime, created_at, sender_id")
+      .eq("conversation_id", c.id)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const last = lastRows?.[0];
+    if (last) {
+      c.last_message_at = last.created_at || c.last_message_at;
+      if (last.body) c.last_preview = last.body.slice(0, 80);
+      else if (last.attachment_mime?.startsWith("image/")) c.last_preview = "تصویر";
+      else if (last.attachment_name) c.last_preview = last.attachment_name;
+      else c.last_preview = "پیام";
+    } else {
+      c.last_preview = c.type === "channel" ? "کانال" : c.type === "group" ? "گروه" : "بدون پیام";
+    }
   }
   return items;
 }
