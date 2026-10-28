@@ -605,18 +605,35 @@ async function openConversation(id) {
   const pane = $("#chat-pane");
   const conv = state.conversations.find((c) => c.id === id) || { id, title: "گفتگو" };
 
+  const typeLabel = conv.type === "channel" ? "کانال" : conv.type === "group" ? "گروه" : (conv.is_saved ? "پیام‌های شخصی" : "خصوصی");
+  const subText = conv.type === "private" && conv.peer?.username
+    ? ("@" + conv.peer.username)
+    : typeLabel;
+
+  const headerAvatar = el("div", { class: "avatar" });
+  if (conv.avatar_url) headerAvatar.append(el("img", { src: conv.avatar_url, alt: "" }));
+  else setText(headerAvatar, initials(conv.title || conv.peer?.display_name || "?"));
+
+  const headerInfo = el("button", {
+    class: "info chat-header-info",
+    type: "button",
+    title: "اطلاعات گفتگو",
+    onclick: () => openConversationInfo(id, conv),
+  }, [
+    el("h3", { text: conv.title || conv.peer?.display_name || "گفتگو" }),
+    el("span", { id: "chat-sub", text: subText }),
+  ]);
+
+  headerAvatar.style.cursor = "pointer";
+  headerAvatar.onclick = () => openConversationInfo(id, conv);
+
   const header = el("div", { class: "chat-header" }, [
     el("button", {
       class: "icon-btn", type: "button", title: "بازگشت",
       onclick: () => { main.classList.remove("show-chat"); },
     }, [icon("back")]),
-    el("div", { class: "avatar" }, [
-      conv.avatar_url ? el("img", { src: conv.avatar_url, alt: "" }) : document.createTextNode(initials(conv.title || "?")),
-    ]),
-    el("div", { class: "info" }, [
-      el("h3", { text: conv.title || "گفتگو" }),
-      el("span", { id: "chat-sub", text: conv.type || "" }),
-    ]),
+    headerAvatar,
+    headerInfo,
   ]);
 
   const messagesEl = el("div", { class: "messages", id: "messages" });
@@ -909,6 +926,15 @@ function renderMessages(container, messages, opts = {}) {
       ev.preventDefault();
       openMessageMenu(m, opts.conversationId, ev.clientX, ev.clientY);
     });
+    let holdTimer = null;
+    bubble.addEventListener("touchstart", (ev) => {
+      const t = ev.touches[0];
+      holdTimer = setTimeout(() => {
+        openMessageMenu(m, opts.conversationId, t.clientX, t.clientY);
+      }, 480);
+    }, { passive: true });
+    bubble.addEventListener("touchend", () => clearTimeout(holdTimer));
+    bubble.addEventListener("touchmove", () => clearTimeout(holdTimer));
     bubble.addEventListener("dblclick", () => startReply(m));
 
     container.append(bubble);
@@ -1836,97 +1862,296 @@ async function handleInviteDeepLink() {
 
 
 async function openEditConversationPanel(conversationId, conv) {
+  return openConversationInfo(conversationId, conv, { startEditing: true });
+}
+
+async function openConversationInfo(conversationId, conv, opts = {}) {
+  const c = (state.conversations || []).find((x) => x.id === conversationId) || conv || {};
+  const myRole = c.role || "member";
+  const isAdmin = myRole === "owner" || myRole === "admin";
+  const isGroupLike = c.type === "group" || c.type === "channel";
+  const isPrivate = c.type === "private";
+
   const overlay = el("div", { class: "panel-overlay" });
-  const sheet = el("div", { class: "panel sheet" });
+  const sheet = el("div", { class: "panel sheet conv-info" });
+  const errBox = el("div", { class: "msg-error hidden", id: "ci-err" });
   let memberCount = null;
   try { memberCount = await getMemberCount(conversationId); } catch (_) {}
+
+  const heroAv = el("div", { class: "conv-hero-avatar" });
+  if (c.avatar_url) heroAv.append(el("img", { src: c.avatar_url, alt: "" }));
+  else setText(heroAv, initials(c.title || c.peer?.display_name || "?"));
+
+  const titleEl = el("h2", { class: "conv-hero-title", text: c.title || c.peer?.display_name || "گفتگو" });
+  const metaBits = [];
+  if (c.type === "channel") metaBits.push(c.is_public ? "کانال عمومی" : "کانال خصوصی");
+  else if (c.type === "group") metaBits.push("گروه");
+  else if (c.is_saved) metaBits.push("پیام‌های شخصی");
+  else metaBits.push("گفتگوی خصوصی");
+  if (memberCount != null && isGroupLike) metaBits.push(`${memberCount} عضو`);
+  if (c.peer?.username) metaBits.push("@" + c.peer.username);
+  const metaEl = el("p", { class: "conv-hero-meta", text: metaBits.join(" · ") });
+  const descEl = el("p", { class: "conv-hero-desc", text: c.description || "" });
+  if (!c.description) descEl.classList.add("hidden");
+
   sheet.append(
-    el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px" }, [
-      el("h3", { text: conv.type === "channel" ? "ویرایش کانال" : "ویرایش گروه" }),
+    el("div", { style: "display:flex;justify-content:flex-end" }, [
       el("button", { class: "icon-btn", type: "button", onclick: () => overlay.remove() }, [icon("close")]),
     ]),
-    memberCount != null
-      ? el("p", { style: "color:var(--text-mute);font-size:0.85rem", text: `تعداد اعضا: ${memberCount}` })
-      : null,
-    el("div", { class: "field" }, [
-      el("label", { text: "نام" }),
-      el("input", { id: "ec-title", value: conv.title || "" }),
-    ]),
-    el("div", { class: "field" }, [
-      el("label", { text: "توضیحات" }),
-      el("textarea", { id: "ec-desc", rows: "3" }),
-    ]),
+    heroAv,
+    titleEl,
+    metaEl,
+    descEl,
+    errBox,
   );
-  const isChannel = conv.type === "channel";
-  if (isChannel) {
-    const pub = el("div", { class: "field" });
-    const sel = el("select", { id: "ec-public" });
-    for (const [v, l] of [["true", "عمومی"], ["false", "خصوصی"]]) {
-      const o = el("option", { value: v, text: l });
-      if (String(!!conv.is_public) === v) o.selected = true;
-      sel.append(o);
+
+  const actions = el("div", { class: "conv-info-actions" });
+
+  // Mute / archive always
+  actions.append(el("button", {
+    class: "btn btn-ghost", type: "button",
+    text: c.muted ? "صدا دار کردن" : "بی‌صدا کردن",
+    onclick: async () => {
+      try {
+        await setConversationMuted(conversationId, !c.muted);
+        toast(c.muted ? "صدا دار شد" : "بی‌صدا شد");
+        overlay.remove();
+        await refreshConversations();
+      } catch (e) { toast(e.message || "خطا"); }
+    },
+  }));
+  actions.append(el("button", {
+    class: "btn btn-ghost", type: "button",
+    text: c.archived ? "خارج از آرشیو" : "آرشیو",
+    onclick: async () => {
+      try {
+        await setConversationArchived(conversationId, !c.archived);
+        toast(c.archived ? "از آرشیو خارج شد" : "آرشیو شد");
+        overlay.remove();
+        state.activeId = null;
+        $("#main")?.classList.remove("show-chat");
+        await refreshConversations();
+      } catch (e) { toast(e.message || "خطا"); }
+    },
+  }));
+
+  if (isGroupLike) {
+    actions.append(el("button", {
+      class: "btn btn-ghost", type: "button", text: "اعضا و مدیران",
+      onclick: () => { overlay.remove(); openMembersPanel(conversationId, c); },
+    }));
+    if (isAdmin) {
+      actions.append(el("button", {
+        class: "btn btn-ghost", type: "button", text: "لینک دعوت",
+        onclick: async () => {
+          try {
+            const link = await createInviteLink(conversationId, { maxUses: 50, expiresHours: 72 });
+            const url = `${location.origin}${location.pathname}?invite=${link.code}`;
+            await navigator.clipboard.writeText(url).catch(() => {});
+            toast("لینک کپی شد");
+            alert("لینک دعوت:\n" + url);
+          } catch (e) {
+            toast(e.message || "ساخت لینک ممکن نشد — sql/006");
+          }
+        },
+      }));
+      if (c.pinned_message_id) {
+        actions.append(el("button", {
+          class: "btn btn-ghost", type: "button", text: "برداشتن سنجاق",
+          onclick: async () => {
+            try {
+              await pinMessage(conversationId, null);
+              toast("سنجاق برداشته شد");
+              overlay.remove();
+              openConversation(conversationId);
+            } catch (e) { toast(e.message || "خطا"); }
+          },
+        }));
+      }
     }
-    pub.append(el("label", { text: "نوع کانال" }), sel);
-    sheet.append(pub);
   }
-  sheet.append(
-    el("div", { class: "field" }, [
-      el("label", { text: "تصویر" }),
-      el("input", { id: "ec-av", type: "file", accept: "image/*" }),
-    ]),
-    el("button", {
-      class: "btn btn-primary", type: "button", text: "ذخیره",
+
+  if (isPrivate && c.peer?.id) {
+    actions.append(el("button", {
+      class: "btn btn-ghost", type: "button", text: "مشاهده پروفایل",
+      onclick: () => { overlay.remove(); openProfileView(c.peer.id); },
+    }));
+    actions.append(el("button", {
+      class: "btn btn-danger", type: "button", text: "مسدود کردن",
       onclick: async () => {
+        if (!confirm("مسدود شود؟")) return;
         try {
-          const file = $("#ec-av")?.files?.[0];
-          if (file) await uploadConversationAvatar(conversationId, file);
-          await updateConversationMeta(conversationId, {
-            title: $("#ec-title").value.trim(),
-            description: $("#ec-desc").value,
-            is_public: isChannel ? $("#ec-public")?.value === "true" : undefined,
-          });
-          toast("ذخیره شد");
+          await blockUser(c.peer.id);
           overlay.remove();
+          toast("مسدود شد");
+        } catch (e) { toast(e.message || "خطا"); }
+      },
+    }));
+  }
+
+  sheet.append(actions);
+
+  // Edit section — only admins for group/channel
+  if (isGroupLike && isAdmin) {
+    const editSec = el("div", { class: "conv-edit-section" });
+    editSec.append(el("h3", { text: "ویرایش اطلاعات" }));
+    const preview = el("div", { class: "avatar-preview" });
+    if (c.avatar_url) preview.append(el("img", { src: c.avatar_url, alt: "" }));
+    else setText(preview, initials(c.title || "?"));
+
+    const fileInput = el("input", { id: "ci-av", type: "file", accept: "image/jpeg,image/png,image/webp,image/gif", class: "hidden" });
+    let selectedFile = null;
+    editSec.append(
+      preview,
+      el("button", {
+        class: "btn btn-ghost", type: "button", text: "انتخاب تصویر",
+        onclick: () => fileInput.click(),
+      }),
+      fileInput,
+      el("div", { class: "field" }, [
+        el("label", { text: "نام" }),
+        el("input", { id: "ci-title", value: c.title || "" }),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { text: "توضیحات" }),
+        el("textarea", { id: "ci-desc", rows: "3" }),
+      ]),
+    );
+    if (c.type === "channel") {
+      const sel = el("select", { id: "ci-public" });
+      for (const [v, l] of [["true", "عمومی"], ["false", "خصوصی"]]) {
+        const o = el("option", { value: v, text: l });
+        if (String(!!c.is_public) === v) o.selected = true;
+        sel.append(o);
+      }
+      editSec.append(el("div", { class: "field" }, [el("label", { text: "نوع کانال" }), sel]));
+    }
+    const saveBtn = el("button", { class: "btn btn-primary", type: "button", text: "ذخیره تغییرات" });
+    saveBtn.onclick = async () => {
+      errBox.classList.add("hidden");
+      const title = ($("#ci-title")?.value || "").trim();
+      if (!title) {
+        errBox.textContent = "نام نمی‌تواند خالی باشد.";
+        errBox.classList.remove("hidden");
+        return;
+      }
+      saveBtn.disabled = true;
+      setText(saveBtn, "در حال ذخیره…");
+      try {
+        if (selectedFile) {
+          await uploadConversationAvatar(conversationId, selectedFile);
+        }
+        await updateConversationMeta(conversationId, {
+          title,
+          description: $("#ci-desc")?.value || "",
+          is_public: c.type === "channel" ? $("#ci-public")?.value === "true" : undefined,
+        });
+        toast("ذخیره شد");
+        overlay.remove();
+        await refreshConversations();
+        if (state.activeId === conversationId) openConversation(conversationId);
+      } catch (e) {
+        errBox.textContent = e.message || "ذخیره ناموفق بود.";
+        errBox.classList.remove("hidden");
+        saveBtn.disabled = false;
+        setText(saveBtn, "ذخیره تغییرات");
+      }
+    };
+    fileInput.onchange = () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      selectedFile = f;
+      const url = URL.createObjectURL(f);
+      preview.replaceChildren(el("img", { src: url, alt: "" }));
+    };
+    editSec.append(saveBtn);
+    sheet.append(editSec);
+    // fill desc after append
+    setTimeout(() => {
+      const d = $("#ci-desc");
+      if (d) d.value = c.description || "";
+    }, 0);
+  }
+
+  if (isGroupLike) {
+    sheet.append(el("button", {
+      class: "btn btn-danger", type: "button", text: c.type === "channel" ? "ترک کانال" : "خروج از گروه",
+      style: "margin-top:12px",
+      onclick: async () => {
+        if (!confirm("خارج می‌شوید؟")) return;
+        try {
+          await groupLeave(conversationId);
+          overlay.remove();
+          state.activeId = null;
+          $("#main")?.classList.remove("show-chat");
           await refreshConversations();
-          if (state.activeId === conversationId) openConversation(conversationId);
+          toast("خارج شدید");
         } catch (e) {
-          toast(e.message || "خطا — sql/007 و دسترسی مدیر را بررسی کنید");
+          toast(e.message || "خروج ممکن نشد");
         }
       },
-    }),
-  );
-  $("#ec-desc").value = conv.description || "";
+    }));
+  }
+
   overlay.append(sheet);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
   document.body.append(overlay);
 }
 
-
 function openCreateGroupForm() {
   const overlay = el("div", { class: "panel-overlay" });
   const sheet = el("div", { class: "panel sheet" });
+  const errBox = el("div", { class: "msg-error hidden" });
+  const preview = el("div", { class: "avatar-preview" });
+  setText(preview, "G");
+  const fileInput = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif", class: "hidden" });
+  let selectedFile = null;
+  fileInput.onchange = () => {
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    selectedFile = f;
+    preview.replaceChildren(el("img", { src: URL.createObjectURL(f), alt: "" }));
+  };
+  const saveBtn = el("button", { class: "btn btn-primary", type: "button", text: "ساخت گروه" });
+  saveBtn.onclick = async () => {
+    errBox.classList.add("hidden");
+    const title = ($("#ng-title")?.value || "").trim();
+    if (title.length < 2) {
+      errBox.textContent = "نام گروه حداقل ۲ کاراکتر باشد.";
+      errBox.classList.remove("hidden");
+      return;
+    }
+    saveBtn.disabled = true;
+    setText(saveBtn, "در حال ساخت…");
+    try {
+      const id = await createGroup(title, []);
+      const desc = ($("#ng-desc")?.value || "").trim();
+      if (desc) {
+        await updateConversationMeta(id, { description: desc });
+      }
+      if (selectedFile) {
+        await uploadConversationAvatar(id, selectedFile);
+      }
+      overlay.remove();
+      toast("گروه ساخته شد");
+      await refreshConversations();
+      await openConversation(id);
+    } catch (e) {
+      errBox.textContent = e.message || "ساخت گروه ناموفق بود.";
+      errBox.classList.remove("hidden");
+      saveBtn.disabled = false;
+      setText(saveBtn, "ساخت گروه");
+    }
+  };
   sheet.append(
     el("h3", { text: "گروه جدید" }),
+    errBox,
+    preview,
+    el("button", { class: "btn btn-ghost", type: "button", text: "تصویر گروه (اختیاری)", onclick: () => fileInput.click() }),
+    fileInput,
     el("div", { class: "field" }, [el("label", { text: "نام گروه" }), el("input", { id: "ng-title", placeholder: "مثلاً دوستان" })]),
     el("div", { class: "field" }, [el("label", { text: "توضیحات (اختیاری)" }), el("textarea", { id: "ng-desc", rows: "2" })]),
-    el("button", {
-      class: "btn btn-primary", type: "button", text: "ساخت",
-      onclick: async () => {
-        const title = $("#ng-title").value.trim();
-        if (!title) return toast("نام لازم است");
-        try {
-          const id = await createGroup(title, []);
-          if ($("#ng-desc").value.trim()) {
-            try { await updateConversationMeta(id, { description: $("#ng-desc").value.trim() }); } catch (_) {}
-          }
-          overlay.remove();
-          toast("گروه ساخته شد");
-          await openConversation(id);
-        } catch (e) {
-          toast(e.message || "خطا در ساخت گروه");
-        }
-      },
-    }),
+    saveBtn,
     el("button", { class: "btn btn-ghost", type: "button", text: "انصراف", onclick: () => overlay.remove() }),
   );
   overlay.append(sheet);
@@ -1937,30 +2162,59 @@ function openCreateGroupForm() {
 function openCreateChannelForm() {
   const overlay = el("div", { class: "panel-overlay" });
   const sheet = el("div", { class: "panel sheet" });
+  const errBox = el("div", { class: "msg-error hidden" });
+  const preview = el("div", { class: "avatar-preview" });
+  setText(preview, "C");
+  const fileInput = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/gif", class: "hidden" });
+  let selectedFile = null;
+  fileInput.onchange = () => {
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    selectedFile = f;
+    preview.replaceChildren(el("img", { src: URL.createObjectURL(f), alt: "" }));
+  };
   const sel = el("select", { id: "nc-public" });
   sel.append(el("option", { value: "true", text: "عمومی" }), el("option", { value: "false", text: "خصوصی" }));
+  const saveBtn = el("button", { class: "btn btn-primary", type: "button", text: "ساخت کانال" });
+  saveBtn.onclick = async () => {
+    errBox.classList.add("hidden");
+    const title = ($("#nc-title")?.value || "").trim();
+    if (title.length < 2) {
+      errBox.textContent = "نام کانال حداقل ۲ کاراکتر باشد.";
+      errBox.classList.remove("hidden");
+      return;
+    }
+    saveBtn.disabled = true;
+    setText(saveBtn, "در حال ساخت…");
+    try {
+      const id = await createChannel(title, ($("#nc-desc")?.value || "").trim(), sel.value === "true");
+      if (selectedFile) {
+        await uploadConversationAvatar(id, selectedFile);
+      }
+      overlay.remove();
+      toast("کانال ساخته شد");
+      await refreshConversations();
+      await openConversation(id);
+    } catch (e) {
+      errBox.textContent = e.message || "ساخت کانال ناموفق بود.";
+      errBox.classList.remove("hidden");
+      saveBtn.disabled = false;
+      setText(saveBtn, "ساخت کانال");
+    }
+  };
   sheet.append(
     el("h3", { text: "کانال جدید" }),
+    errBox,
+    preview,
+    el("button", { class: "btn btn-ghost", type: "button", text: "تصویر کانال (اختیاری)", onclick: () => fileInput.click() }),
+    fileInput,
     el("div", { class: "field" }, [el("label", { text: "نام کانال" }), el("input", { id: "nc-title" })]),
     el("div", { class: "field" }, [el("label", { text: "توضیحات" }), el("textarea", { id: "nc-desc", rows: "2" })]),
     el("div", { class: "field" }, [el("label", { text: "نوع" }), sel]),
-    el("button", {
-      class: "btn btn-primary", type: "button", text: "ساخت کانال",
-      onclick: async () => {
-        const title = $("#nc-title").value.trim();
-        if (!title) return toast("نام لازم است");
-        try {
-          const id = await createChannel(title, $("#nc-desc").value.trim(), $("#nc-public").value === "true");
-          overlay.remove();
-          toast("کانال ساخته شد");
-          await openConversation(id);
-        } catch (e) {
-          toast(e.message || "خطا در ساخت کانال");
-        }
-      },
-    }),
+    saveBtn,
     el("button", { class: "btn btn-ghost", type: "button", text: "انصراف", onclick: () => overlay.remove() }),
   );
   overlay.append(sheet);
   document.body.append(overlay);
+  $("#nc-title")?.focus();
 }

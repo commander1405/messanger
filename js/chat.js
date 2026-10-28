@@ -705,18 +705,33 @@ export async function uploadConversationAvatar(conversationId, file) {
   const sb = getSupabase();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) throw new Error("وارد نشده‌اید.");
-  if (!file?.type?.startsWith("image/")) throw new Error("فقط تصویر مجاز است.");
-  if (file.size > (CONFIG.MAX_IMAGE_BYTES || 5_000_000)) throw new Error("حجم تصویر زیاد است.");
-  const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
-  const path = `conv/${conversationId}/avatar_${Date.now()}.${ext}`;
+  // avatars bucket RLS: first folder must equal auth.uid()
+  const allowed = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+  if (!file?.type || !allowed.includes(file.type)) {
+    throw new Error("فقط JPEG، PNG، WebP یا GIF مجاز است.");
+  }
+  if (file.size > (CONFIG.MAX_IMAGE_BYTES || 5_000_000)) {
+    throw new Error("حجم تصویر بیش از حد مجاز است.");
+  }
+  const extMap = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+  const ext = extMap[file.type] || "jpg";
+  const path = `${user.id}/conversations/${conversationId}/avatar_${Date.now()}.${ext}`;
   const { error: upErr } = await sb.storage.from("avatars").upload(path, file, {
     upsert: true,
     contentType: file.type,
   });
-  if (upErr) throw upErr;
+  if (upErr) throw new Error(upErr.message || "آپلود تصویر ناموفق بود.");
   const { data } = sb.storage.from("avatars").getPublicUrl(path);
   const url = `${data.publicUrl}?t=${Date.now()}`;
-  return updateConversationMeta(conversationId, { avatar_url: url });
+  try {
+    return await updateConversationMeta(conversationId, { avatar_url: url });
+  } catch (metaErr) {
+    // meta failed after upload — surface error clearly (orphan file remains under user folder)
+    throw new Error(
+      (metaErr?.message || "ذخیرهٔ اطلاعات گفتگو ناموفق بود") +
+      " — تصویر آپلود شد ولی در پروفایل گفتگو ثبت نشد."
+    );
+  }
 }
 
 /** Local draft helpers (device-local, not server) */
