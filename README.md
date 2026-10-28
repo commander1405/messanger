@@ -51,3 +51,27 @@
 ```
 index.html  config.js  css/  js/  sql/  supabase/functions/auth-username/
 ```
+
+
+## Migrationهای SQL
+
+به ترتیب در Supabase SQL Editor:
+
+1. `sql/001_schema.sql`
+2. `sql/002_rls.sql`
+3. `sql/003_storage.sql`
+4. `sql/004_phase2.sql`
+5. `sql/005_advanced_chat.sql` — پاسخ، ویرایش، حذف، آرشیو، واکنش
+6. `sql/006_forward_search_blocks_invites_reports.sql` — فوروارد، جستجو، بلاک، دعوت، گزارش
+
+## Push اعلان مرورگر
+
+برای Web Push واقعی نیاز است:
+
+- Service Worker روی GitHub Pages
+- کلید VAPID (خصوصی فقط سمت سرور/Edge Function)
+- جدول `push_subscriptions`
+- Edge Function برای ارسال اعلان هنگام پیام جدید
+
+بدون سرویس ارسال (یا cron/webhook روی insert پیام)، اعلان پس‌زمینه کامل نمی‌شود.
+فعلاً اعلان داخل‌برنامه از طریق به‌روزرسانی Realtime فهرست گفتگوها انجام می‌شود.

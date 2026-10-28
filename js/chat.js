@@ -481,3 +481,172 @@ export async function toggleReaction(messageId, emoji) {
   if (error) throw error;
   return { removed: false };
 }
+
+export async function forwardMessage(messageId, targetConversationId) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("forward_message", {
+    p_message_id: messageId,
+    p_target_conversation_id: targetConversationId,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function searchInConversation(conversationId, query, { limit = 30, offset = 0 } = {}) {
+  const sb = getSupabase();
+  const q = String(query || "").trim();
+  if (!q) return [];
+  const { data, error } = await sb.rpc("search_messages_in_conversation", {
+    p_conversation_id: conversationId,
+    p_query: q,
+    p_limit: limit,
+    p_offset: offset,
+  });
+  if (!error && Array.isArray(data)) return data;
+  // fallback
+  const { data: rows, error: e2 } = await sb
+    .from("messages")
+    .select("id, body, sender_id, created_at, profiles:sender_id(username, display_name)")
+    .eq("conversation_id", conversationId)
+    .is("deleted_at", null)
+    .ilike("body", `%${q.replace(/%/g, "")}%`)
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (e2) throw e2;
+  return (rows || []).map((r) => ({
+    id: r.id,
+    body: r.body,
+    sender_id: r.sender_id,
+    created_at: r.created_at,
+    username: r.profiles?.username,
+    display_name: r.profiles?.display_name,
+  }));
+}
+
+export async function loadReactions(messageIds) {
+  const sb = getSupabase();
+  if (!messageIds?.length) return {};
+  const { data, error } = await sb
+    .from("message_reactions")
+    .select("message_id, emoji, user_id")
+    .in("message_id", messageIds);
+  if (error) return {};
+  const map = {};
+  for (const r of data || []) {
+    if (!map[r.message_id]) map[r.message_id] = {};
+    if (!map[r.message_id][r.emoji]) map[r.message_id][r.emoji] = { count: 0, mine: false, users: [] };
+    map[r.message_id][r.emoji].count += 1;
+    map[r.message_id][r.emoji].users.push(r.user_id);
+  }
+  return map;
+}
+
+export async function blockUser(userId) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("block_user", { p_blocked_id: userId });
+  if (!error) return;
+  const { data: { user } } = await sb.auth.getUser();
+  const { error: e2 } = await sb.from("blocks").insert({ blocker_id: user.id, blocked_id: userId });
+  if (e2 && e2.code !== "23505") throw e2;
+}
+
+export async function unblockUser(userId) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("unblock_user", { p_blocked_id: userId });
+  if (!error) return;
+  const { data: { user } } = await sb.auth.getUser();
+  const { error: e2 } = await sb.from("blocks").delete().eq("blocker_id", user.id).eq("blocked_id", userId);
+  if (e2) throw e2;
+}
+
+export async function listBlockedUsers() {
+  const sb = getSupabase();
+  const { data: { user } } = await sb.auth.getUser();
+  const { data, error } = await sb
+    .from("blocks")
+    .select("blocked_id, created_at, profiles:blocked_id(id, username, display_name, avatar_url)")
+    .eq("blocker_id", user.id)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((b) => ({
+    id: b.blocked_id,
+    blocked_at: b.created_at,
+    ...(b.profiles || {}),
+  }));
+}
+
+export async function listContacts() {
+  // contacts = unique peers from private conversations
+  const items = await listConversations();
+  const peers = [];
+  const seen = new Set();
+  for (const c of items) {
+    if (c.type !== "private" || !c.peer?.id) continue;
+    if (seen.has(c.peer.id)) continue;
+    seen.add(c.peer.id);
+    peers.push(c.peer);
+  }
+  return peers;
+}
+
+export async function createInviteLink(conversationId, { maxUses = null, expiresHours = null } = {}) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("create_invite_link", {
+    p_conversation_id: conversationId,
+    p_max_uses: maxUses,
+    p_expires_hours: expiresHours,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function joinByInvite(code) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("join_by_invite", { p_code: code });
+  if (error) {
+    const m = String(error.message || "");
+    if (m.includes("invalid")) throw new Error("لینک دعوت نامعتبر است.");
+    if (m.includes("revoked")) throw new Error("این لینک لغو شده است.");
+    if (m.includes("expired")) throw new Error("لینک منقضی شده است.");
+    if (m.includes("exhausted")) throw new Error("سقف استفاده از لینک پر شده است.");
+    throw error;
+  }
+  return data;
+}
+
+export async function revokeInviteLink(id) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("revoke_invite_link", { p_id: id });
+  if (error) throw error;
+}
+
+export async function submitReport(targetType, targetId, reason) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("submit_report", {
+    p_target_type: targetType,
+    p_target_id: targetId,
+    p_reason: reason,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function uploadVoiceBlob(conversationId, blob, durationSec) {
+  const sb = getSupabase();
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) throw new Error("وارد نشده‌اید.");
+  if (!blob || blob.size < 1) throw new Error("فایل صوتی خالی است.");
+  if (blob.size > CONFIG.MAX_AUDIO_BYTES) throw new Error("حجم فایل صوتی بیش از حد مجاز است.");
+  const path = `${user.id}/${conversationId}/voice_${Date.now()}.webm`;
+  const { error: upErr } = await sb.storage.from("chat-files").upload(path, blob, {
+    contentType: blob.type || "audio/webm",
+    upsert: false,
+  });
+  if (upErr) throw upErr;
+  return {
+    path,
+    name: `voice_${Math.round(durationSec || 0)}s.webm`,
+    mime: blob.type || "audio/webm",
+    size: blob.size,
+  };
+}
