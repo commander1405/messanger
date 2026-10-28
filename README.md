@@ -62,3 +62,25 @@ RLS روی جداول اصلی، Storage محدود، رندر پیام با tex
 ## تماس
 
 برای تماس واقعی: سیگنالینگ + STUN/TURN لازم است. تا آن زمان فلگ‌ها در config خاموش‌اند.
+
+
+## فاز ۲
+
+Migration جدید: `sql/004_phase2.sql` (پس از 001–003)
+
+### ورود با نام کاربری
+
+- رمز فقط در **Supabase Auth** ذخیره می‌شود (هش‌شده).
+- مسیر پیشنهادی تولید: Edge Function `supabase/functions/auth-username`
+  ```bash
+  supabase functions deploy auth-username
+  ```
+  سپس در `config.js`:
+  ```js
+  AUTH_EDGE_URL: "https://YOUR_PROJECT.supabase.co/functions/v1/auth-username"
+  ```
+- بدون Edge Function: ایمیل مصنوعی `username@users.darkknight.local` (تأیید ایمیل را در Auth خاموش کنید).
+
+### Realtime
+
+در Dashboard برای جداول `messages` و `typing_status` گزینه Replication را فعال کنید.

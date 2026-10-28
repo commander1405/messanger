@@ -1,10 +1,18 @@
 import { CONFIG, isConfigured, assetUrl } from "../config.js";
-import { getSession, onAuthChange, signOut, sendPhoneOtp, verifyPhoneOtp, signInEmail, signUpEmail } from "./auth.js";
-import { ensureProfile, updateProfile, searchUsers, uploadAvatar } from "./profiles.js";
+import {
+  getSession, onAuthChange, signOut, sendPhoneOtp, verifyPhoneOtp,
+  signInEmail, signUpEmail, signUpWithUsername, signInWithUsername,
+  recoverUsernamePassword, finalizeProfileClaim,
+} from "./auth.js";
+import {
+  ensureProfile, updateProfile, searchUsers, uploadAvatar,
+  getPublicProfile, startPresenceHeartbeat,
+} from "./profiles.js";
 import {
   listConversations, openPrivateChat, loadMessages, sendMessage, markRead,
   subscribeMessages, subscribeTyping, setTyping, uploadAttachment, getAttachmentUrl,
   createGroup, createChannel, searchPublicChannels, joinPublicChannel,
+  listMembers, groupAddMember, groupLeave,
 } from "./chat.js";
 import { $, el, setText, formatTime, initials, toast, icon, faAuthError } from "./utils.js";
 
@@ -18,6 +26,8 @@ const state = {
   unsubTyping: null,
   phonePending: null,
   resendAt: 0,
+  presenceStop: null,
+  sending: false,
 };
 
 export async function boot() {
@@ -43,9 +53,25 @@ export async function boot() {
       root.replaceChildren(renderAuthScreen());
     }
   });
+  setupConnectivityBanner();
   const session = await getSession();
   state.session = session;
   if (!session) root.replaceChildren(renderAuthScreen());
+}
+
+function setupConnectivityBanner() {
+  const ensure = () => {
+    let b = document.getElementById("offline-banner");
+    if (!navigator.onLine) {
+      if (!b) {
+        b = el("div", { id: "offline-banner", class: "offline-banner", text: "اتصال اینترنت برقرار نیست. برخی قابلیت‌ها موقتاً از دسترس خارج‌اند." });
+        document.body.prepend(b);
+      }
+    } else if (b) b.remove();
+  };
+  window.addEventListener("online", ensure);
+  window.addEventListener("offline", ensure);
+  ensure();
 }
 
 function renderSetupScreen() {
@@ -79,9 +105,10 @@ function renderAuthScreen(errMsg = "") {
   card.append(brand());
 
   const tabs = el("div", { class: "tabs" });
-  const phoneTab = el("button", { class: "active", type: "button", text: "تلفن" });
-  const emailTab = el("button", { type: "button", text: "ایمیل (توسعه)" });
-  tabs.append(phoneTab, emailTab);
+  const userTab = el("button", { class: "active", type: "button", text: "نام کاربری" });
+  const phoneTab = el("button", { type: "button", text: "تلفن" });
+  const emailTab = el("button", { type: "button", text: "ایمیل" });
+  tabs.append(userTab, phoneTab, emailTab);
 
   const errBox = el("div", { class: errMsg ? "msg-error" : "msg-error hidden", text: errMsg || "" });
   const body = el("div");
@@ -95,36 +122,129 @@ function renderAuthScreen(errMsg = "") {
     setText(errBox, "");
   }
 
+  function usernameForm(mode) {
+    body.replaceChildren();
+    const isReg = mode === "register";
+    body.append(el("div", {
+      class: "msg-info",
+      text: isReg
+        ? "رمز عبور فقط در سیستم احراز هویت ذخیره می‌شود (نه در پروفایل). نام کاربری یکتا الزامی است."
+        : "ورود با نام کاربری و رمز عبور.",
+    }));
+    if (isReg) {
+      body.append(el("div", { class: "field" }, [
+        el("label", { text: "نام نمایشی" }),
+        el("input", { id: "dn", placeholder: "مثلاً آریا", autocomplete: "nickname" }),
+      ]));
+    }
+    body.append(
+      el("div", { class: "field" }, [
+        el("label", { text: "نام کاربری" }),
+        el("input", { id: "uname", placeholder: "commander04", autocomplete: "username" }),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { text: "رمز عبور" }),
+        el("input", { id: "pw", type: "password", placeholder: "حداقل ۶ کاراکتر", autocomplete: isReg ? "new-password" : "current-password" }),
+      ]),
+    );
+    if (isReg) {
+      const row = el("div", { class: "row" });
+      row.append(
+        el("div", { class: "field" }, [
+          el("label", { text: "جنسیت (اختیاری)" }),
+          (() => {
+            const s = el("select", { id: "gender" });
+            for (const [v, l] of [["", "—"], ["male", "مرد"], ["female", "زن"], ["other", "سایر"], ["unspecified", "ترجیح می‌دهم نگویم"]]) {
+              s.append(el("option", { value: v, text: l }));
+            }
+            return s;
+          })(),
+        ]),
+        el("div", { class: "field" }, [
+          el("label", { text: "کشور (اختیاری)" }),
+          el("input", { id: "country", placeholder: "ایران" }),
+        ]),
+      );
+      body.append(row);
+    }
+    const btn = el("button", {
+      class: "btn btn-primary", type: "button",
+      text: isReg ? "ثبت‌نام" : "ورود",
+    });
+    body.append(btn);
+    if (!isReg) {
+      const rec = el("button", { class: "btn btn-ghost", type: "button", text: "بازیابی رمز عبور", style: "margin-top:8px" });
+      body.append(rec);
+      rec.onclick = async () => {
+        clearErr();
+        await recoverUsernamePassword($("#uname").value);
+        toast("اگر حسابی با این نام کاربری وجود داشته باشد، دستور بازیابی ارسال می‌شود.");
+      };
+      const toReg = el("button", { class: "btn btn-ghost", type: "button", text: "ساخت حساب جدید", style: "margin-top:8px" });
+      body.append(toReg);
+      toReg.onclick = () => usernameForm("register");
+    } else {
+      const toLogin = el("button", { class: "btn btn-ghost", type: "button", text: "حساب دارم — ورود", style: "margin-top:8px" });
+      body.append(toLogin);
+      toLogin.onclick = () => usernameForm("login");
+    }
+    btn.onclick = async () => {
+      clearErr();
+      btn.disabled = true;
+      try {
+        if (isReg) {
+          await signUpWithUsername({
+            username: $("#uname").value,
+            password: $("#pw").value,
+            displayName: $("#dn")?.value,
+            gender: $("#gender")?.value || null,
+            country: $("#country")?.value || "",
+          });
+          // اگر session بلافاصله نبود (تأیید ایمیل)، راهنما
+          const s = await getSession();
+          if (!s) toast("ثبت‌نام انجام شد. اگر تأیید ایمیل فعال است، صندوق را بررسی کنید؛ در غیر این صورت وارد شوید.");
+          else {
+            try {
+              await finalizeProfileClaim(
+                $("#uname").value.trim().toLowerCase(),
+                ($("#dn")?.value || $("#uname").value).trim(),
+                $("#gender")?.value || null,
+                $("#country")?.value || "",
+              );
+            } catch (_) { /* profile may already exist via edge */ }
+          }
+        } else {
+          await signInWithUsername($("#uname").value, $("#pw").value);
+        }
+      } catch (e) {
+        showErr(e.message || faAuthError(e));
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  }
+
   function phoneForm() {
     body.replaceChildren();
     if (!CONFIG.ENABLE_PHONE_AUTH) {
       body.append(el("div", { class: "msg-info", text: "احراز هویت تلفنی در config غیرفعال است." }));
       return;
     }
-    body.append(el("div", { class: "msg-info", text: "نیاز به SMS Provider فعال در Supabase Auth دارد. بدون آن ارسال کد واقعی انجام نمی‌شود." }));
-
+    body.append(el("div", { class: "msg-info", text: "نیاز به SMS Provider فعال در Supabase Auth دارد." }));
     const row = el("div", { class: "row" });
-    const cc = el("div", { class: "field" }, [
-      el("label", { text: "کد کشور" }),
-      el("input", { id: "cc", value: "98", inputmode: "numeric" }),
-    ]);
-    const phone = el("div", { class: "field" }, [
-      el("label", { text: "شماره موبایل" }),
-      el("input", { id: "phone", placeholder: "9121234567", inputmode: "numeric" }),
-    ]);
-    row.append(cc, phone);
+    row.append(
+      el("div", { class: "field" }, [el("label", { text: "کد کشور" }), el("input", { id: "cc", value: "98", inputmode: "numeric" })]),
+      el("div", { class: "field" }, [el("label", { text: "شماره موبایل" }), el("input", { id: "phone", placeholder: "9121234567", inputmode: "numeric" })]),
+    );
     body.append(row);
-
     const otpField = el("div", { class: "field hidden", id: "otp-wrap" }, [
       el("label", { text: "کد تأیید" }),
       el("input", { id: "otp", placeholder: "123456", inputmode: "numeric" }),
     ]);
     body.append(otpField);
-
     const btn = el("button", { class: "btn btn-primary", type: "button", text: "ارسال کد" });
     const btnVerify = el("button", { class: "btn btn-primary hidden", type: "button", text: "تأیید کد" });
     body.append(btn, el("div", { style: "height:8px" }), btnVerify);
-
     btn.onclick = async () => {
       clearErr();
       btn.disabled = true;
@@ -159,17 +279,14 @@ function renderAuthScreen(errMsg = "") {
   function emailForm() {
     body.replaceChildren();
     if (!CONFIG.ENABLE_EMAIL_DEV_AUTH) {
-      body.append(el("div", { class: "msg-info", text: "حالت ایمیل توسعه غیرفعال است." }));
+      body.append(el("div", { class: "msg-info", text: "ورود ایمیلی در config غیرفعال است." }));
       return;
     }
-    body.append(el("div", {
-      class: "msg-info",
-      text: "این مسیر فقط برای توسعه است و جایگزین تأیید تلفنی واقعی نیست.",
-    }));
+    body.append(el("div", { class: "msg-info", text: "مسیر ایمیل برای مواقعی است که تلفن یا Edge Function آماده نیست." }));
     body.append(
-      el("div", { class: "field" }, [el("label", { text: "نام نمایشی" }), el("input", { id: "dn", placeholder: "مثلاً آریا" })]),
+      el("div", { class: "field" }, [el("label", { text: "نام نمایشی" }), el("input", { id: "dn", placeholder: "نام شما" })]),
       el("div", { class: "field" }, [el("label", { text: "ایمیل" }), el("input", { id: "em", type: "email", placeholder: "you@example.com" })]),
-      el("div", { class: "field" }, [el("label", { text: "رمز عبور" }), el("input", { id: "pw", type: "password", placeholder: "حداقل ۶ کاراکتر" })]),
+      el("div", { class: "field" }, [el("label", { text: "رمز عبور" }), el("input", { id: "pw", type: "password" })]),
     );
     const row = el("div", { class: "row" });
     const loginBtn = el("button", { class: "btn btn-primary", type: "button", text: "ورود" });
@@ -178,36 +295,28 @@ function renderAuthScreen(errMsg = "") {
     body.append(row);
     loginBtn.onclick = async () => {
       clearErr();
-      try {
-        await signInEmail($("#em").value.trim(), $("#pw").value);
-      } catch (e) {
-        showErr(faAuthError(e));
-      }
+      try { await signInEmail($("#em").value.trim(), $("#pw").value); }
+      catch (e) { showErr(faAuthError(e)); }
     };
     regBtn.onclick = async () => {
       clearErr();
       try {
         await signUpEmail($("#em").value.trim(), $("#pw").value, $("#dn").value.trim());
-        toast("ثبت‌نام انجام شد. اگر تأیید ایمیل فعال باشد، صندوق ورودی را چک کنید.");
-      } catch (e) {
-        showErr(faAuthError(e));
-      }
+        toast("ثبت‌نام انجام شد.");
+      } catch (e) { showErr(faAuthError(e)); }
     };
   }
 
-  phoneTab.onclick = () => {
-    phoneTab.classList.add("active");
-    emailTab.classList.remove("active");
-    phoneForm();
-  };
-  emailTab.onclick = () => {
-    emailTab.classList.add("active");
-    phoneTab.classList.remove("active");
-    emailForm();
-  };
+  function setTab(active) {
+    for (const b of [userTab, phoneTab, emailTab]) b.classList.remove("active");
+    active.classList.add("active");
+  }
+  userTab.onclick = () => { setTab(userTab); usernameForm("login"); };
+  phoneTab.onclick = () => { setTab(phoneTab); phoneForm(); };
+  emailTab.onclick = () => { setTab(emailTab); emailForm(); };
 
   card.append(tabs, errBox, body);
-  phoneForm();
+  usernameForm("login");
   wrap.append(card);
   return wrap;
 }
@@ -248,6 +357,8 @@ function renderUsernameGate() {
 }
 
 async function showMain() {
+  if (state.presenceStop) { try { state.presenceStop(); } catch (_) {} }
+  state.presenceStop = startPresenceHeartbeat();
   const root = $("#app");
   const shell = el("div", { class: "app-shell" });
   const main = el("div", { class: "main", id: "main" });
@@ -435,16 +546,25 @@ async function openConversation(id) {
 
   try {
     state.messages = await loadMessages(id);
-    renderMessages(messagesEl, state.messages);
+    renderMessages(messagesEl, state.messages, { conversationId: id });
     await markRead(id);
   } catch (e) {
     setText(messagesEl, e.message || "خطا در دریافت پیام‌ها");
   }
 
+  // members button for groups
+  if (conv.type === "group" || conv.type === "channel") {
+    const memBtn = el("button", {
+      class: "icon-btn", type: "button", title: "اعضا",
+      onclick: () => openMembersPanel(id, conv),
+    }, [icon("users")]);
+    header.append(memBtn);
+  }
+
   state.unsubMsg = subscribeMessages(id, async (row) => {
     if (state.messages.some((m) => m.id === row.id || (row.client_id && m.client_id === row.client_id))) return;
     state.messages.push(row);
-    renderMessages(messagesEl, state.messages);
+    renderMessages(messagesEl, state.messages, { conversationId: id });
     await markRead(id);
   });
   state.unsubTyping = subscribeTyping(id, (row) => {
@@ -460,16 +580,28 @@ async function openConversation(id) {
   });
 
   async function doSend(attachment = null) {
+    if (state.sending) return;
     const body = ta.value;
+    if (!body.trim() && !attachment) return;
+    if (!navigator.onLine) {
+      toast("آفلاین هستید. پس از اتصال دوباره تلاش کنید.");
+      return;
+    }
     ta.value = "";
+    state.sending = true;
+    sendBtn.disabled = true;
     try {
       const msg = await sendMessage(id, body, attachment);
-      if (!state.messages.some((m) => m.id === msg.id)) {
+      if (!state.messages.some((m) => m.id === msg.id || (msg.client_id && m.client_id === msg.client_id))) {
         state.messages.push(msg);
-        renderMessages(messagesEl, state.messages);
+        renderMessages(messagesEl, state.messages, { conversationId: id });
       }
     } catch (e) {
+      ta.value = body;
       toast(e.message || "ارسال ناموفق");
+    } finally {
+      state.sending = false;
+      sendBtn.disabled = false;
     }
   }
   sendBtn.onclick = () => doSend();
@@ -494,8 +626,33 @@ async function openConversation(id) {
   };
 }
 
-function renderMessages(container, messages) {
+function renderMessages(container, messages, opts = {}) {
   container.replaceChildren();
+  if (messages.length >= 1) {
+    const loadBtn = el("button", {
+      class: "load-older", type: "button", text: "بارگذاری پیام‌های قبلی",
+      onclick: async () => {
+        const first = messages[0];
+        if (!first || !opts.conversationId) return;
+        loadBtn.disabled = true;
+        try {
+          const older = await loadMessages(opts.conversationId, { before: first.created_at });
+          if (!older.length) {
+            setText(loadBtn, "پیام قدیمی‌تری نیست");
+            return;
+          }
+          const ids = new Set(state.messages.map((x) => x.id));
+          const merged = [...older.filter((x) => !ids.has(x.id)), ...state.messages];
+          state.messages = merged;
+          renderMessages(container, state.messages, opts);
+        } catch (e) {
+          toast(e.message || "خطا");
+          loadBtn.disabled = false;
+        }
+      },
+    });
+    container.append(loadBtn);
+  }
   for (const m of messages) {
     const mine = m.sender_id === state.profile?.id;
     const bubble = el("div", { class: `msg ${mine ? "mine" : "theirs"}` });
@@ -549,14 +706,8 @@ function openSearchPanel() {
         const item = el("div", {
           class: "list-item",
           onclick: async () => {
-            try {
-              const id = await openPrivateChat(u.id);
-              overlay.remove();
-              await refreshConversations();
-              await openConversation(id);
-            } catch (e) {
-              toast(e.message || "خطا");
-            }
+            overlay.remove();
+            await openProfileView(u.id);
           },
         });
         const av = el("div", { class: "avatar" });
@@ -582,6 +733,133 @@ function openSearchPanel() {
   });
 }
 
+
+async function openMembersPanel(conversationId, conv) {
+  const overlay = el("div", { class: "panel" });
+  const inner = el("div", { class: "panel-inner" });
+  inner.append(
+    el("div", { style: "display:flex;justify-content:space-between;align-items:center" }, [
+      el("h3", { text: "اعضای " + (conv.title || "گروه") }),
+      el("button", { class: "icon-btn", type: "button", onclick: () => overlay.remove() }, [icon("close")]),
+    ]),
+  );
+  const list = el("div", { class: "list" });
+  setText(list, "در حال بارگذاری...");
+  inner.append(list);
+  if (conv.role === "owner" || conv.role === "admin") {
+    inner.append(el("button", {
+      class: "btn btn-primary", type: "button", text: "افزودن عضو با نام کاربری",
+      style: "margin-top:10px",
+      onclick: async () => {
+        const uname = prompt("نام کاربری فرد:");
+        if (!uname) return;
+        try {
+          const found = await searchUsers(uname.trim());
+          const user = (found || []).find((u) => u.username === uname.trim().toLowerCase()) || found?.[0];
+          if (!user) throw new Error("کاربر پیدا نشد");
+          await groupAddMember(conversationId, user.id);
+          toast("عضو اضافه شد");
+          overlay.remove();
+          openMembersPanel(conversationId, conv);
+        } catch (e) {
+          toast(e.message || "خطا");
+        }
+      },
+    }));
+  }
+  inner.append(el("button", {
+    class: "btn btn-danger", type: "button", text: "خروج از گفتگو",
+    style: "margin-top:8px",
+    onclick: async () => {
+      if (!confirm("از این گروه/کانال خارج می‌شوید؟")) return;
+      try {
+        await groupLeave(conversationId);
+        overlay.remove();
+        state.activeId = null;
+        await refreshConversations();
+        $("#chat-pane")?.replaceChildren(el("div", { class: "empty" }, [
+          el("strong", { text: "گفتگویی انتخاب نشده" }),
+        ]));
+        toast("خارج شدید");
+      } catch (e) {
+        toast(e.message || "خطا");
+      }
+    },
+  }));
+  overlay.append(inner);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+  try {
+    const members = await listMembers(conversationId);
+    list.replaceChildren();
+    for (const m of members || []) {
+      const row = el("div", { class: "member-row" });
+      const av = el("div", { class: "avatar" });
+      if (m.avatar_url) av.append(el("img", { src: m.avatar_url, alt: "" }));
+      else setText(av, initials(m.display_name || m.username || "?"));
+      row.append(
+        av,
+        el("div", { class: "list-meta", style: "flex:1" }, [
+          el("div", { class: "title", text: m.display_name || m.username || "کاربر" }),
+          el("div", { class: "preview", text: m.username ? "@" + m.username : "" }),
+        ]),
+        el("span", { class: "role-tag", text: m.role || "member" }),
+      );
+      row.style.cursor = "pointer";
+      row.onclick = () => openProfileView(m.user_id);
+      list.append(row);
+    }
+    if (!list.children.length) setText(list, "عضوی نیست");
+  } catch (e) {
+    setText(list, e.message || "خطا");
+  }
+}
+
+async function openProfileView(userId) {
+  const overlay = el("div", { class: "panel" });
+  const inner = el("div", { class: "panel-inner" });
+  inner.append(
+    el("div", { style: "display:flex;justify-content:space-between;align-items:center" }, [
+      el("h3", { text: "پروفایل" }),
+      el("button", { class: "icon-btn", type: "button", onclick: () => overlay.remove() }, [icon("close")]),
+    ]),
+  );
+  const box = el("div");
+  setText(box, "در حال بارگذاری...");
+  inner.append(box);
+  overlay.append(inner);
+  document.body.append(overlay);
+  try {
+    const p = await getPublicProfile(userId);
+    if (!p) { setText(box, "پیدا نشد"); return; }
+    box.replaceChildren();
+    const av = el("div", { class: "avatar", style: "width:72px;height:72px;margin:0 auto 12px" });
+    if (p.avatar_url) av.append(el("img", { src: p.avatar_url, alt: "" }));
+    else setText(av, initials(p.display_name || p.username));
+    box.append(av);
+    box.append(el("h3", { style: "text-align:center", text: p.display_name || "—" }));
+    box.append(el("p", { style: "text-align:center;color:var(--text-dim)", text: p.username ? "@" + p.username : "" }));
+    if (p.bio) box.append(el("p", { text: p.bio }));
+    if (p.country) box.append(el("p", { style: "color:var(--text-dim);font-size:0.85rem", text: "کشور: " + p.country }));
+    if (p.is_online === true) box.append(el("p", { style: "color:var(--online);font-size:0.85rem", text: "آنلاین" }));
+    else if (p.last_seen_at) box.append(el("p", { style: "color:var(--text-mute);font-size:0.85rem", text: "آخرین بازدید: " + formatTime(p.last_seen_at) }));
+    if (p.id !== state.profile?.id) {
+      box.append(el("button", {
+        class: "btn btn-primary", type: "button", text: "شروع گفتگو",
+        style: "margin-top:12px",
+        onclick: async () => {
+          const cid = await openPrivateChat(p.id);
+          overlay.remove();
+          await refreshConversations();
+          await openConversation(cid);
+        },
+      }));
+    }
+  } catch (e) {
+    setText(box, e.message || "خطا");
+  }
+}
+
 function openSettingsPanel() {
   const overlay = el("div", { class: "panel" });
   const inner = el("div", { class: "panel-inner" });
@@ -594,6 +872,19 @@ function openSettingsPanel() {
     el("div", { class: "field" }, [el("label", { text: "نام کاربری" }), el("input", { id: "s-user", value: p.username || "" })]),
     el("div", { class: "field" }, [el("label", { text: "نام نمایشی" }), el("input", { id: "s-name", value: p.display_name || "" })]),
     el("div", { class: "field" }, [el("label", { text: "بیو" }), el("textarea", { id: "s-bio", rows: "3" })]),
+    el("div", { class: "field" }, [el("label", { text: "کشور" }), el("input", { id: "s-country", value: p.country || "" })]),
+    el("div", { class: "field" }, [
+      el("label", { text: "جنسیت" }),
+      (() => {
+        const s = el("select", { id: "s-gender" });
+        for (const [v, l] of [["unspecified", "ترجیح می‌دهم نگویم"], ["male", "مرد"], ["female", "زن"], ["other", "سایر"]]) {
+          const o = el("option", { value: v, text: l });
+          if ((p.gender || "unspecified") === v) o.selected = true;
+          s.append(o);
+        }
+        return s;
+      })(),
+    ]),
     el("div", { class: "field" }, [el("label", { text: "آواتار" }), el("input", { id: "s-av", type: "file", accept: "image/*" })]),
     el("button", {
       class: "btn btn-primary", type: "button", text: "ذخیره",
@@ -605,6 +896,8 @@ function openSettingsPanel() {
             username: $("#s-user").value.trim().toLowerCase(),
             display_name: $("#s-name").value.trim(),
             bio: $("#s-bio").value,
+            country: $("#s-country")?.value || "",
+            gender: $("#s-gender")?.value || "unspecified",
           });
           toast("ذخیره شد");
           overlay.remove();

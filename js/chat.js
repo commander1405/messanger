@@ -15,14 +15,13 @@ export async function listConversations() {
 
   const items = (memberships || [])
     .map((m) => ({
-      ...m.conversations,
+      ...(m.conversations || {}),
       role: m.role,
       last_read_at: m.last_read_at,
     }))
-    .filter(Boolean)
+    .filter((c) => c && c.id)
     .sort((a, b) => new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0));
 
-  // enrich private chats with peer profile
   for (const c of items) {
     if (c.type === "private") {
       const { data: members } = await sb
@@ -31,10 +30,9 @@ export async function listConversations() {
         .eq("conversation_id", c.id);
       const peer = (members || []).map((x) => x.profiles).find((p) => p && p.id !== user.id);
       c.peer = peer || null;
-      c.title = peer?.display_name || peer?.username || "گفتگو";
+      c.title = peer?.display_name || (peer?.username ? `@${peer.username}` : "گفتگو");
       c.avatar_url = peer?.avatar_url || "";
     }
-    // unread approx: messages after last_read_at
     const { count } = await sb
       .from("messages")
       .select("id", { count: "exact", head: true })
@@ -99,6 +97,47 @@ export async function searchPublicChannels(q) {
   return data || [];
 }
 
+export async function listMembers(conversationId) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("list_conversation_members", {
+    p_conversation_id: conversationId,
+  });
+  if (!error && data) return data;
+  const { data: rows, error: e2 } = await sb
+    .from("conversation_members")
+    .select("user_id, role, joined_at, profiles:user_id(username, display_name, avatar_url)")
+    .eq("conversation_id", conversationId);
+  if (e2) throw e2;
+  return (rows || []).map((r) => ({
+    user_id: r.user_id,
+    role: r.role,
+    username: r.profiles?.username,
+    display_name: r.profiles?.display_name,
+    avatar_url: r.profiles?.avatar_url,
+    joined_at: r.joined_at,
+  }));
+}
+
+export async function groupAddMember(conversationId, userId) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("group_add_member", {
+    p_conversation_id: conversationId,
+    p_user_id: userId,
+  });
+  if (error) throw error;
+}
+
+export async function groupLeave(conversationId) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("group_leave", { p_conversation_id: conversationId });
+  if (error) {
+    if (String(error.message || "").includes("owner_must_transfer")) {
+      throw new Error("مالک تنها نمی‌تواند خارج شود. ابتدا مالکیت را منتقل کنید.");
+    }
+    throw error;
+  }
+}
+
 export async function loadMessages(conversationId, { before, limit } = {}) {
   const sb = getSupabase();
   const page = limit || CONFIG.MESSAGE_PAGE_SIZE;
@@ -115,16 +154,16 @@ export async function loadMessages(conversationId, { before, limit } = {}) {
   return (data || []).reverse();
 }
 
-export async function sendMessage(conversationId, body, attachment = null) {
+export async function sendMessage(conversationId, body, attachment = null, { clientId } = {}) {
   const sb = getSupabase();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) throw new Error("وارد نشده‌اید.");
-  const clientId = uid();
+  const cid = clientId || uid();
   const row = {
     conversation_id: conversationId,
     sender_id: user.id,
     body: (body || "").trim(),
-    client_id: clientId,
+    client_id: cid,
   };
   if (attachment) {
     row.attachment_path = attachment.path;
@@ -133,20 +172,42 @@ export async function sendMessage(conversationId, body, attachment = null) {
     row.attachment_size = attachment.size;
   }
   if (!row.body && !row.attachment_path) throw new Error("پیام خالی است.");
-  const { data, error } = await sb.from("messages").insert(row).select("*, profiles:sender_id(id, username, display_name, avatar_url)").single();
-  if (error) throw error;
+  const { data, error } = await sb
+    .from("messages")
+    .insert(row)
+    .select("*, profiles:sender_id(id, username, display_name, avatar_url)")
+    .single();
+  if (error) {
+    if (error.code === "23505") {
+      // duplicate client_id — treat as success path by re-fetch
+      const { data: existing } = await sb
+        .from("messages")
+        .select("*, profiles:sender_id(id, username, display_name, avatar_url)")
+        .eq("conversation_id", conversationId)
+        .eq("sender_id", user.id)
+        .eq("client_id", cid)
+        .maybeSingle();
+      if (existing) return existing;
+    }
+    throw error;
+  }
   return data;
 }
 
 export async function markRead(conversationId) {
   const sb = getSupabase();
-  const { data: { user } } = await sb.auth.getUser();
-  if (!user) return;
-  await sb
-    .from("conversation_members")
-    .update({ last_read_at: new Date().toISOString() })
-    .eq("conversation_id", conversationId)
-    .eq("user_id", user.id);
+  const { error } = await sb.rpc("mark_conversation_read", {
+    p_conversation_id: conversationId,
+  });
+  if (error) {
+    const { data: { user } } = await sb.auth.getUser();
+    if (!user) return;
+    await sb
+      .from("conversation_members")
+      .update({ last_read_at: new Date().toISOString() })
+      .eq("conversation_id", conversationId)
+      .eq("user_id", user.id);
+  }
 }
 
 export async function setTyping(conversationId) {
@@ -163,49 +224,85 @@ export async function setTyping(conversationId) {
 export function subscribeMessages(conversationId, onInsert) {
   const sb = getSupabase();
   const channel = sb
-    .channel(`messages:${conversationId}`)
+    .channel(`messages:${conversationId}:${Date.now()}`)
     .on(
       "postgres_changes",
-      { event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${conversationId}` },
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "messages",
+        filter: `conversation_id=eq.${conversationId}`,
+      },
       (payload) => onInsert(payload.new)
     )
     .subscribe();
-  return () => sb.removeChannel(channel);
+  return () => {
+    try { sb.removeChannel(channel); } catch (_) { /* ignore */ }
+  };
 }
 
 export function subscribeTyping(conversationId, onChange) {
   const sb = getSupabase();
   const channel = sb
-    .channel(`typing:${conversationId}`)
+    .channel(`typing:${conversationId}:${Date.now()}`)
     .on(
       "postgres_changes",
-      { event: "*", schema: "public", table: "typing_status", filter: `conversation_id=eq.${conversationId}` },
+      {
+        event: "*",
+        schema: "public",
+        table: "typing_status",
+        filter: `conversation_id=eq.${conversationId}`,
+      },
       (payload) => onChange(payload.new || payload.old)
     )
     .subscribe();
-  return () => sb.removeChannel(channel);
+  return () => {
+    try { sb.removeChannel(channel); } catch (_) { /* ignore */ }
+  };
+}
+
+function sniffAllowed(file) {
+  const type = file.type || "";
+  const name = (file.name || "").toLowerCase();
+  const ext = name.includes(".") ? name.split(".").pop() : "";
+  if (CONFIG.ALLOWED_IMAGE_TYPES.includes(type)) return "image";
+  if (CONFIG.ALLOWED_VIDEO_TYPES.includes(type)) return "video";
+  if (CONFIG.ALLOWED_AUDIO_TYPES.includes(type)) return "audio";
+  const okExt = ["pdf", "txt", "zip", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
+  if (type === "application/pdf" || type === "text/plain" || okExt.includes(ext)) return "file";
+  if (type.startsWith("image/") || type.startsWith("video/") || type.startsWith("audio/")) {
+    // type claimed but not in allowlist
+    return null;
+  }
+  return null;
 }
 
 export async function uploadAttachment(conversationId, file) {
   const sb = getSupabase();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) throw new Error("وارد نشده‌اید.");
+  const kind = sniffAllowed(file);
+  if (!kind) throw new Error("نوع فایل مجاز نیست.");
   const size = file.size;
-  const type = file.type || "application/octet-stream";
   let max = CONFIG.MAX_FILE_BYTES;
-  if (type.startsWith("image/")) max = CONFIG.MAX_IMAGE_BYTES;
-  else if (type.startsWith("video/")) max = CONFIG.MAX_VIDEO_BYTES;
-  else if (type.startsWith("audio/")) max = CONFIG.MAX_AUDIO_BYTES;
+  if (kind === "image") max = CONFIG.MAX_IMAGE_BYTES;
+  else if (kind === "video") max = CONFIG.MAX_VIDEO_BYTES;
+  else if (kind === "audio") max = CONFIG.MAX_AUDIO_BYTES;
   if (size > max) throw new Error("حجم فایل بیش از حد مجاز است.");
 
-  const safe = file.name.replace(/[^\w.\-()+ء-ی]/g, "_").slice(0, 80);
-  const path = `${conversationId}/${user.id}/${Date.now()}_${safe}`;
+  const safe = file.name.replace(/[^\w.\-()+ء-ی]/g, "_").slice(0, 80) || "file";
+  const path = `${conversationId}/${user.id}/${Date.now()}_${Math.random().toString(16).slice(2, 10)}_${safe}`;
   const { error } = await sb.storage.from("attachments").upload(path, file, {
-    contentType: type,
+    contentType: file.type || "application/octet-stream",
     upsert: false,
   });
   if (error) throw error;
-  return { path, name: file.name, mime: type, size };
+  return {
+    path,
+    name: file.name,
+    mime: file.type || "application/octet-stream",
+    size,
+  };
 }
 
 export async function getAttachmentUrl(path) {

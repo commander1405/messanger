@@ -20,6 +20,10 @@ export const CONFIG = {
   ENABLE_PHONE_AUTH: true,
   // حالت توسعه: ایمیل/رمز — فقط وقتی SMS آماده نیست. تولید واقعی نیست.
   ENABLE_EMAIL_DEV_AUTH: true,
+  // مسیر Edge Function احراز هویت با نام کاربری (پس از deploy)
+  // مثال: https://xxxx.supabase.co/functions/v1/auth-username
+  // اگر خالی باشد از ایمیل مصنوعی username@users.darkknight.local استفاده می‌شود
+  AUTH_EDGE_URL: "",
   ENABLE_GOOGLE_LOGIN: false,
 
   // تماس‌ها تا زیرساخت WebRTC/TURN آماده نشود خاموش بمانند
