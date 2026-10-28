@@ -705,3 +705,16 @@ a { color: var(--accent-2); }
 @media (max-width: 859px) {
   .sidebar { max-width: none; border-left: none; }
 }
+
+.pin-banner {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+  text-align: center;
+}
+.pin-banner:hover { filter: brightness(1.05); }

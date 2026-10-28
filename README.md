@@ -20,6 +20,7 @@
 4. `sql/004_phase2.sql`
 5. `sql/005_advanced_chat.sql`
 6. `sql/006_forward_search_blocks_invites_reports.sql`
+7. `sql/007_group_channel_management.sql` — ویرایش گروه/کانال، نقش‌ها، سنجاق
 
 ## Edge Function
 

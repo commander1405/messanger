@@ -650,3 +650,91 @@ export async function uploadVoiceBlob(conversationId, blob, durationSec) {
     size: blob.size,
   };
 }
+
+export async function updateConversationMeta(conversationId, patch = {}) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("update_conversation_meta", {
+    p_conversation_id: conversationId,
+    p_title: patch.title ?? null,
+    p_description: patch.description ?? null,
+    p_is_public: typeof patch.is_public === "boolean" ? patch.is_public : null,
+    p_avatar_url: patch.avatar_url ?? null,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function setMemberRole(conversationId, userId, role) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("set_member_role", {
+    p_conversation_id: conversationId,
+    p_user_id: userId,
+    p_role: role,
+  });
+  if (error) throw error;
+}
+
+export async function removeMember(conversationId, userId) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("remove_member", {
+    p_conversation_id: conversationId,
+    p_user_id: userId,
+  });
+  if (error) throw error;
+}
+
+export async function pinMessage(conversationId, messageId) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("pin_message", {
+    p_conversation_id: conversationId,
+    p_message_id: messageId,
+  });
+  if (error) throw error;
+}
+
+export async function getMemberCount(conversationId) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("conversation_member_count", {
+    p_conversation_id: conversationId,
+  });
+  if (error) return null;
+  return data;
+}
+
+export async function uploadConversationAvatar(conversationId, file) {
+  const sb = getSupabase();
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) throw new Error("وارد نشده‌اید.");
+  if (!file?.type?.startsWith("image/")) throw new Error("فقط تصویر مجاز است.");
+  if (file.size > (CONFIG.MAX_IMAGE_BYTES || 5_000_000)) throw new Error("حجم تصویر زیاد است.");
+  const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+  const path = `conv/${conversationId}/avatar_${Date.now()}.${ext}`;
+  const { error: upErr } = await sb.storage.from("avatars").upload(path, file, {
+    upsert: true,
+    contentType: file.type,
+  });
+  if (upErr) throw upErr;
+  const { data } = sb.storage.from("avatars").getPublicUrl(path);
+  const url = `${data.publicUrl}?t=${Date.now()}`;
+  return updateConversationMeta(conversationId, { avatar_url: url });
+}
+
+/** Local draft helpers (device-local, not server) */
+export function saveDraft(conversationId, text) {
+  try {
+    const key = "dk-drafts";
+    const all = JSON.parse(localStorage.getItem(key) || "{}");
+    if (!text || !String(text).trim()) delete all[conversationId];
+    else all[conversationId] = String(text).slice(0, 4000);
+    localStorage.setItem(key, JSON.stringify(all));
+  } catch (_) {}
+}
+
+export function loadDraft(conversationId) {
+  try {
+    const all = JSON.parse(localStorage.getItem("dk-drafts") || "{}");
+    return all[conversationId] || "";
+  } catch {
+    return "";
+  }
+}

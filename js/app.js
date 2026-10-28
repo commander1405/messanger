@@ -16,6 +16,8 @@ import {
   forwardMessage, searchInConversation, loadReactions, blockUser, unblockUser,
   listBlockedUsers, listContacts, createInviteLink, joinByInvite, revokeInviteLink,
   submitReport, uploadVoiceBlob,
+  updateConversationMeta, setMemberRole, removeMember, pinMessage,
+  getMemberCount, uploadConversationAvatar, saveDraft, loadDraft,
 } from "./chat.js";
 import { $, el, setText, formatTime, initials, toast, icon, faAuthError } from "./utils.js";
 
@@ -655,7 +657,32 @@ async function openConversation(id) {
     onclick: () => openChatMenu(id, conv),
   }, [icon("settings")]));
 
-  pane.replaceChildren(header, messagesEl, typingEl, replyBar, composer);
+  // draft
+  const draft = loadDraft(id);
+  if (draft) ta.value = draft;
+  ta.addEventListener("input", () => {
+    saveDraft(id, ta.value);
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+  });
+
+  // pinned banner
+  let pinBanner = null;
+  if (conv?.pinned_message_id) {
+    pinBanner = el("div", {
+      class: "pin-banner",
+      text: "پیام سنجاق‌شده",
+      onclick: () => {
+        const elMsg = messagesEl.querySelector(`.msg[data-id="${conv.pinned_message_id}"]`);
+        if (elMsg) {
+          elMsg.classList.add("msg-highlight");
+          elMsg.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      },
+    });
+  }
+
+  pane.replaceChildren(...[header, pinBanner, messagesEl, typingEl, replyBar, composer].filter(Boolean));
 
   window.__dkReplyBar = { bar: replyBar, label: replyLabel, input: ta };
 
@@ -680,7 +707,11 @@ async function openConversation(id) {
     if (state.messages.some((m) => m.id === row.id || (row.client_id && m.client_id === row.client_id))) return;
     state.messages.push(row);
     renderMessages(messagesEl, state.messages, { conversationId: id });
-    await markRead(id);
+    if (row.sender_id !== state.profile?.id) {
+      await markRead(id);
+    }
+    // soft refresh list preview without full jump
+    refreshConversations().catch(() => {});
   });
   state.unsubTyping = subscribeTyping(id, (row) => {
     if (!row || row.user_id === state.profile?.id) return;
@@ -722,7 +753,10 @@ async function openConversation(id) {
     sendBtn.disabled = true;
     try {
       const msg = await sendMessage(id, body, attachment, { replyTo });
-      state.messages = [...state.messages, msg];
+      saveDraft(id, "");
+      const byId = new Map((state.messages || []).map((x) => [x.id, x]));
+      byId.set(msg.id, msg);
+      state.messages = [...byId.values()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
       renderMessages(messagesEl, state.messages, { conversationId: id });
       await refreshConversations();
     } catch (e) {
@@ -983,6 +1017,16 @@ function openMessageMenu(m, conversationId, x, y) {
     });
   }
   add("فوروارد", () => openForwardPicker(m));
+  add("سنجاق پیام", async () => {
+    try {
+      await pinMessage(conversationId, m.id);
+      toast("سنجاق شد");
+      await refreshConversations();
+      if (state.activeId === conversationId) openConversation(conversationId);
+    } catch (e) {
+      toast(e.message || "فقط مدیر می‌تواند سنجاق کند — sql/007");
+    }
+  });
   if (!mine) {
     add("گزارش پیام", () => openReportDialog("message", m.id));
   }
@@ -1054,6 +1098,10 @@ async function openChatMenu(conversationId, conv) {
     }),
   );
   if (c.type === "group" || c.type === "channel") {
+    sheet.append(el("button", {
+      class: "btn btn-ghost", type: "button", style: "margin-top:8px", text: "ویرایش اطلاعات",
+      onclick: () => { overlay.remove(); openEditConversationPanel(conversationId, c); },
+    }));
     sheet.append(el("button", {
       class: "btn btn-ghost", type: "button", style: "margin-top:8px", text: "اعضا",
       onclick: () => { overlay.remove(); openMembersPanel(conversationId, c); },
@@ -1178,33 +1226,17 @@ function openCreatePanel() {
     ]),
     el("button", {
       class: "btn btn-primary", type: "button", text: "گروه جدید",
-      onclick: async () => {
-        const title = prompt("نام گروه:");
-        if (!title || !title.trim()) return;
-        try {
-          const id = await createGroup(title.trim(), []);
-          overlay.remove();
-          toast("گروه ساخته شد");
-          await openConversation(id);
-        } catch (e) {
-          toast(e.message || "خطا در ساخت گروه");
-        }
+      onclick: () => {
+        overlay.remove();
+        openCreateGroupForm();
       },
     }),
     el("button", {
       class: "btn btn-ghost", type: "button", text: "کانال جدید",
       style: "margin-top:8px",
-      onclick: async () => {
-        const title = prompt("نام کانال:");
-        if (!title || !title.trim()) return;
-        try {
-          const id = await createChannel(title.trim(), "", true);
-          overlay.remove();
-          toast("کانال ساخته شد");
-          await openConversation(id);
-        } catch (e) {
-          toast(e.message || "خطا در ساخت کانال");
-        }
+      onclick: () => {
+        overlay.remove();
+        openCreateChannelForm();
       },
     }),
     el("button", {
@@ -1299,6 +1331,54 @@ async function openMembersPanel(conversationId, conv) {
       );
       row.style.cursor = "pointer";
       row.onclick = () => openProfileView(m.user_id);
+      const myRole = (state.conversations || []).find((x) => x.id === conversationId)?.role;
+      if (myRole === "owner" && m.role !== "owner" && m.user_id !== state.profile?.id) {
+        const actions = el("div", { style: "display:flex;flex-direction:column;gap:4px" });
+        if (m.role !== "admin") {
+          actions.append(el("button", {
+            class: "btn btn-ghost", type: "button", text: "مدیر",
+            style: "width:auto;padding:4px 8px;font-size:0.75rem;margin:0",
+            onclick: async (ev) => {
+              ev.stopPropagation();
+              try {
+                await setMemberRole(conversationId, m.user_id, "admin");
+                toast("مدیر شد");
+                overlay.remove();
+                openMembersPanel(conversationId, conv);
+              } catch (e) { toast(e.message || "خطا — sql/007"); }
+            },
+          }));
+        } else {
+          actions.append(el("button", {
+            class: "btn btn-ghost", type: "button", text: "عزل",
+            style: "width:auto;padding:4px 8px;font-size:0.75rem;margin:0",
+            onclick: async (ev) => {
+              ev.stopPropagation();
+              try {
+                await setMemberRole(conversationId, m.user_id, "member");
+                toast("نقش تغییر کرد");
+                overlay.remove();
+                openMembersPanel(conversationId, conv);
+              } catch (e) { toast(e.message || "خطا"); }
+            },
+          }));
+        }
+        actions.append(el("button", {
+          class: "btn btn-danger", type: "button", text: "حذف",
+          style: "width:auto;padding:4px 8px;font-size:0.75rem;margin:0",
+          onclick: async (ev) => {
+            ev.stopPropagation();
+            if (!confirm("حذف عضو؟")) return;
+            try {
+              await removeMember(conversationId, m.user_id);
+              toast("حذف شد");
+              overlay.remove();
+              openMembersPanel(conversationId, conv);
+            } catch (e) { toast(e.message || "خطا"); }
+          },
+        }));
+        row.append(actions);
+      }
       list.append(row);
     }
     if (!list.children.length) setText(list, "عضوی نیست");
@@ -1752,4 +1832,135 @@ async function handleInviteDeepLink() {
   } catch (e) {
     toast(e.message || "پیوستن با لینک ناموفق");
   }
+}
+
+
+async function openEditConversationPanel(conversationId, conv) {
+  const overlay = el("div", { class: "panel-overlay" });
+  const sheet = el("div", { class: "panel sheet" });
+  let memberCount = null;
+  try { memberCount = await getMemberCount(conversationId); } catch (_) {}
+  sheet.append(
+    el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px" }, [
+      el("h3", { text: conv.type === "channel" ? "ویرایش کانال" : "ویرایش گروه" }),
+      el("button", { class: "icon-btn", type: "button", onclick: () => overlay.remove() }, [icon("close")]),
+    ]),
+    memberCount != null
+      ? el("p", { style: "color:var(--text-mute);font-size:0.85rem", text: `تعداد اعضا: ${memberCount}` })
+      : null,
+    el("div", { class: "field" }, [
+      el("label", { text: "نام" }),
+      el("input", { id: "ec-title", value: conv.title || "" }),
+    ]),
+    el("div", { class: "field" }, [
+      el("label", { text: "توضیحات" }),
+      el("textarea", { id: "ec-desc", rows: "3" }),
+    ]),
+  );
+  const isChannel = conv.type === "channel";
+  if (isChannel) {
+    const pub = el("div", { class: "field" });
+    const sel = el("select", { id: "ec-public" });
+    for (const [v, l] of [["true", "عمومی"], ["false", "خصوصی"]]) {
+      const o = el("option", { value: v, text: l });
+      if (String(!!conv.is_public) === v) o.selected = true;
+      sel.append(o);
+    }
+    pub.append(el("label", { text: "نوع کانال" }), sel);
+    sheet.append(pub);
+  }
+  sheet.append(
+    el("div", { class: "field" }, [
+      el("label", { text: "تصویر" }),
+      el("input", { id: "ec-av", type: "file", accept: "image/*" }),
+    ]),
+    el("button", {
+      class: "btn btn-primary", type: "button", text: "ذخیره",
+      onclick: async () => {
+        try {
+          const file = $("#ec-av")?.files?.[0];
+          if (file) await uploadConversationAvatar(conversationId, file);
+          await updateConversationMeta(conversationId, {
+            title: $("#ec-title").value.trim(),
+            description: $("#ec-desc").value,
+            is_public: isChannel ? $("#ec-public")?.value === "true" : undefined,
+          });
+          toast("ذخیره شد");
+          overlay.remove();
+          await refreshConversations();
+          if (state.activeId === conversationId) openConversation(conversationId);
+        } catch (e) {
+          toast(e.message || "خطا — sql/007 و دسترسی مدیر را بررسی کنید");
+        }
+      },
+    }),
+  );
+  $("#ec-desc").value = conv.description || "";
+  overlay.append(sheet);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+
+
+function openCreateGroupForm() {
+  const overlay = el("div", { class: "panel-overlay" });
+  const sheet = el("div", { class: "panel sheet" });
+  sheet.append(
+    el("h3", { text: "گروه جدید" }),
+    el("div", { class: "field" }, [el("label", { text: "نام گروه" }), el("input", { id: "ng-title", placeholder: "مثلاً دوستان" })]),
+    el("div", { class: "field" }, [el("label", { text: "توضیحات (اختیاری)" }), el("textarea", { id: "ng-desc", rows: "2" })]),
+    el("button", {
+      class: "btn btn-primary", type: "button", text: "ساخت",
+      onclick: async () => {
+        const title = $("#ng-title").value.trim();
+        if (!title) return toast("نام لازم است");
+        try {
+          const id = await createGroup(title, []);
+          if ($("#ng-desc").value.trim()) {
+            try { await updateConversationMeta(id, { description: $("#ng-desc").value.trim() }); } catch (_) {}
+          }
+          overlay.remove();
+          toast("گروه ساخته شد");
+          await openConversation(id);
+        } catch (e) {
+          toast(e.message || "خطا در ساخت گروه");
+        }
+      },
+    }),
+    el("button", { class: "btn btn-ghost", type: "button", text: "انصراف", onclick: () => overlay.remove() }),
+  );
+  overlay.append(sheet);
+  document.body.append(overlay);
+  $("#ng-title")?.focus();
+}
+
+function openCreateChannelForm() {
+  const overlay = el("div", { class: "panel-overlay" });
+  const sheet = el("div", { class: "panel sheet" });
+  const sel = el("select", { id: "nc-public" });
+  sel.append(el("option", { value: "true", text: "عمومی" }), el("option", { value: "false", text: "خصوصی" }));
+  sheet.append(
+    el("h3", { text: "کانال جدید" }),
+    el("div", { class: "field" }, [el("label", { text: "نام کانال" }), el("input", { id: "nc-title" })]),
+    el("div", { class: "field" }, [el("label", { text: "توضیحات" }), el("textarea", { id: "nc-desc", rows: "2" })]),
+    el("div", { class: "field" }, [el("label", { text: "نوع" }), sel]),
+    el("button", {
+      class: "btn btn-primary", type: "button", text: "ساخت کانال",
+      onclick: async () => {
+        const title = $("#nc-title").value.trim();
+        if (!title) return toast("نام لازم است");
+        try {
+          const id = await createChannel(title, $("#nc-desc").value.trim(), $("#nc-public").value === "true");
+          overlay.remove();
+          toast("کانال ساخته شد");
+          await openConversation(id);
+        } catch (e) {
+          toast(e.message || "خطا در ساخت کانال");
+        }
+      },
+    }),
+    el("button", { class: "btn btn-ghost", type: "button", text: "انصراف", onclick: () => overlay.remove() }),
+  );
+  overlay.append(sheet);
+  document.body.append(overlay);
 }
