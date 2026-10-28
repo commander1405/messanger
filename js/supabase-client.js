@@ -3,6 +3,9 @@ import { CONFIG, isConfigured } from "../config.js";
 
 let client = null;
 
+// storageKey نسخه‌دار تا قفل/نشست خراب قبلی باقی نماند
+const STORAGE_KEY = "dk-messenger-auth-v2";
+
 export function getSupabase() {
   if (!isConfigured()) return null;
   if (!client) {
@@ -10,9 +13,10 @@ export function getSupabase() {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true,
+        detectSessionInUrl: false,
         storage: window.localStorage,
-        storageKey: "dk-messenger-auth",
+        storageKey: STORAGE_KEY,
+        lock: async (_name, _acquireTimeout, fn) => await fn(),
       },
       realtime: { params: { eventsPerSecond: 12 } },
     });
@@ -22,4 +26,8 @@ export function getSupabase() {
 
 export function resetSupabaseClient() {
   client = null;
+}
+
+export function getAuthStorageKey() {
+  return STORAGE_KEY;
 }

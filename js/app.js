@@ -67,10 +67,24 @@ export async function boot() {
     }
   }
 
-  // بازیابی نشست ذخیره‌شده
-  const existing = await getSession();
+  // بازیابی نشست — با timeout تا صفحه روی «بارگذاری» نماند
+  let existing = null;
+  try {
+    existing = await Promise.race([
+      getSession(),
+      new Promise((resolve) => setTimeout(() => resolve(null), 5000)),
+    ]);
+  } catch (e) {
+    console.error("getSession boot", e);
+    existing = null;
+  }
   if (existing) {
-    await enterApp();
+    try {
+      await enterApp();
+    } catch (e) {
+      console.error("enterApp boot", e);
+      root.replaceChildren(renderAuthScreen(e.message || "خطا در ورود به برنامه"));
+    }
   } else {
     root.replaceChildren(renderAuthScreen());
   }

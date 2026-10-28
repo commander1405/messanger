@@ -84,7 +84,8 @@ async function applySessionTokens(body) {
 
   if (timed && timed.__timeout) {
     // ذخیرهٔ مستقیم نشست در همان storageKey کلاینت
-    const storageKey = "dk-messenger-auth";
+    const { getAuthStorageKey, resetSupabaseClient } = await import("./supabase-client.js");
+    const storageKey = getAuthStorageKey();
     const expiresIn = Number(body.expires_in || 3600);
     const payload = {
       access_token: body.access_token,
@@ -99,9 +100,7 @@ async function applySessionTokens(body) {
     } catch (_) {
       /* ignore quota */
     }
-    // کلاینت را تازه کن تا نشست را از storage بخواند
-    const { resetSupabaseClient } = await import("./supabase-client.js");
-    if (typeof resetSupabaseClient === "function") resetSupabaseClient();
+    resetSupabaseClient();
     const sb2 = getSupabase();
     const { data: d2, error: e2 } = await sb2.auth.getSession();
     if (e2 || !d2.session) {
