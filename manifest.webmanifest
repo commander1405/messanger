@@ -1,0 +1,21 @@
+{
+  "name": "DarkKnight Messenger",
+  "short_name": "DarkKnight",
+  "description": "پیام‌رسان مدرن فارسی",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b0d0f",
+  "theme_color": "#101214",
+  "lang": "fa",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "./assets/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

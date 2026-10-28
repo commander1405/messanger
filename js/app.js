@@ -411,7 +411,29 @@ async function showMain() {
   ]));
 
   main.append(sidebar, chat);
-  shell.append(main);
+
+  const bottomNav = el("nav", { class: "bottom-nav", id: "bottom-nav" });
+  const navItems = [
+    { id: "chats", label: "گفتگوها", ic: "chat", fn: () => { state.listFilter = "all"; refreshConversations(); } },
+    { id: "contacts", label: "مخاطبان", ic: "users", fn: () => openContactsPanel() },
+    { id: "search", label: "جستجو", ic: "search", fn: () => openSearchPanel() },
+    { id: "settings", label: "منو", ic: "settings", fn: () => openSettingsPanel() },
+  ];
+  for (const n of navItems) {
+    const b = el("button", {
+      type: "button",
+      class: n.id === "chats" ? "active" : "",
+      onclick: () => {
+        for (const x of bottomNav.querySelectorAll("button")) x.classList.remove("active");
+        b.classList.add("active");
+        n.fn();
+      },
+    });
+    b.append(icon(n.ic), document.createTextNode(n.label));
+    bottomNav.append(b);
+  }
+
+  shell.append(main, bottomNav);
   root.replaceChildren(shell);
 
   const searchInput = $("#sidebar-search");
@@ -446,7 +468,16 @@ function applyConversationSearch(q) {
 async function refreshConversations() {
   const list = $("#conv-list");
   if (!list) return;
-  setText(list, "در حال بارگذاری...");
+  list.replaceChildren();
+  for (let i = 0; i < 5; i++) {
+    list.append(el("div", { class: "skel-row" }, [
+      el("div", { class: "skeleton skel-avatar" }),
+      el("div", { class: "skel-lines" }, [
+        el("div", { class: "skeleton skel-line" }),
+        el("div", { class: "skeleton skel-line short" }),
+      ]),
+    ]));
+  }
   try {
     state.conversations = await listConversations();
     const f = state.listFilter || "all";
@@ -1404,6 +1435,18 @@ function openSettingsPanel() {
       },
     }),
     el("div", { style: "height:10px" }),
+    el("button", {
+      class: "btn btn-ghost", type: "button", text: "تم روشن / تاریک",
+      style: "margin-bottom:8px",
+      onclick: () => {
+        const cur = document.documentElement.getAttribute("data-theme");
+        const next = cur === "light" ? "dark" : "light";
+        if (next === "light") document.documentElement.setAttribute("data-theme", "light");
+        else document.documentElement.removeAttribute("data-theme");
+        try { localStorage.setItem("dk-theme", next); } catch (_) {}
+        toast(next === "light" ? "تم روشن" : "تم تاریک");
+      },
+    }),
     el("button", {
       class: "btn btn-danger", type: "button", text: "خروج از حساب",
       onclick: async () => { await signOut(); overlay.remove(); },
