@@ -1,13 +1,12 @@
 import { CONFIG } from "../config.js";
 import { getSupabase } from "./supabase-client.js";
-import { faAuthError, normalizePhone, validateUsername } from "./utils.js";
+import { validateUsername } from "./utils.js";
 
-/** Synthetic mailbox for username accounts — passwords live only in Supabase Auth. */
+/** ایمیل مصنوعی فقط داخل Auth؛ کاربر آن را نمی‌بیند و در UI استفاده نمی‌شود. */
 const USER_EMAIL_DOMAIN = "users.darkknight.local";
 
 export function usernameToEmail(username) {
-  const u = String(username || "").trim().toLowerCase();
-  return `${u}@${USER_EMAIL_DOMAIN}`;
+  return `${String(username || "").trim().toLowerCase()}@${USER_EMAIL_DOMAIN}`;
 }
 
 export async function getSession() {
@@ -29,102 +28,94 @@ export async function signOut() {
   await sb.auth.signOut();
 }
 
-export async function sendPhoneOtp(countryCode, national) {
-  const sb = getSupabase();
-  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  if (!CONFIG.ENABLE_PHONE_AUTH) throw new Error("احراز هویت تلفنی غیرفعال است.");
-  const phone = normalizePhone(countryCode, national);
-  if (!phone || phone.length < 10) throw new Error("شماره تلفن نامعتبر است.");
-  const { error } = await sb.auth.signInWithOtp({ phone });
-  if (error) throw new Error(faAuthError(error));
-  return phone;
+function edgeUrl() {
+  const u = (CONFIG.AUTH_EDGE_URL || "").trim();
+  return u || null;
 }
 
-export async function verifyPhoneOtp(phone, token) {
-  const sb = getSupabase();
-  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  const { data, error } = await sb.auth.verifyOtp({ phone, token, type: "sms" });
-  if (error) throw new Error(faAuthError(error));
-  return data.session;
+function edgeHeaders() {
+  const key = CONFIG.SUPABASE_ANON_KEY || "";
+  return {
+    "Content-Type": "application/json",
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+  };
 }
 
-export async function signUpEmail(email, password, displayName) {
+async function callAuthEdge(payload) {
+  const url = edgeUrl();
+  if (!url) throw new Error("AUTH_EDGE_URL تنظیم نشده است.");
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: edgeHeaders(),
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error("ارتباط با سرویس احراز هویت برقرار نشد. اتصال اینترنت را بررسی کنید.");
+  }
+  let body = {};
+  try {
+    body = await res.json();
+  } catch {
+    body = {};
+  }
+  return { res, body };
+}
+
+async function applySessionTokens(body) {
   const sb = getSupabase();
   if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  if (!CONFIG.ENABLE_EMAIL_DEV_AUTH) throw new Error("ورود ایمیلی توسعه غیرفعال است.");
-  const { data, error } = await sb.auth.signUp({
-    email,
-    password,
-    options: { data: { display_name: displayName || "کاربر" } },
+  if (!body?.access_token || !body?.refresh_token) {
+    throw new Error("نشست معتبر از سرور دریافت نشد.");
+  }
+  const { data, error } = await sb.auth.setSession({
+    access_token: body.access_token,
+    refresh_token: body.refresh_token,
   });
-  if (error) throw new Error(faAuthError(error));
-  return data;
-}
-
-export async function signInEmail(email, password) {
-  const sb = getSupabase();
-  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  if (!CONFIG.ENABLE_EMAIL_DEV_AUTH) throw new Error("ورود ایمیلی توسعه غیرفعال است.");
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) throw new Error(faAuthError(error));
+  if (error || !data.session) throw new Error("نشست برقرار نشد. دوباره تلاش کنید.");
   return data.session;
 }
 
 /**
  * ثبت‌نام با نام کاربری + رمز.
- * رمز فقط در Supabase Auth ذخیره می‌شود (هش‌شده)، نه در profiles.
- * ترجیح: Edge Function در صورت تنظیم CONFIG.AUTH_EDGE_URL
- * جایگزین امن سمت کلاینت: ایمیل مصنوعی username@users.darkknight.local
- * (در Auth، تأیید ایمیل را برای این دامنه/پروژه غیرفعال کنید)
+ * رمز فقط در Supabase Auth ذخیره می‌شود.
+ * مسیر اصلی: Edge Function (بدون ارسال ایمیل تأیید و بدون rate-limit ایمیل).
  */
 export async function signUpWithUsername({ username, password, displayName, gender, country }) {
   const u = String(username || "").trim().toLowerCase();
-  if (!validateUsername(u)) throw new Error("نام کاربری باید ۳ تا ۲۴ حرف انگلیسی، عدد یا _ باشد.");
-  if (!password || password.length < 6) throw new Error("رمز عبور حداقل ۶ کاراکتر باشد.");
-  const dn = (displayName || u).trim();
+  if (!validateUsername(u)) {
+    throw new Error("نام کاربری باید ۳ تا ۲۴ حرف انگلیسی کوچک، عدد یا _ باشد.");
+  }
+  if (!password || String(password).length < 6) {
+    throw new Error("رمز عبور حداقل ۶ کاراکتر باشد.");
+  }
+  const dn = String(displayName || u).trim() || u;
 
-  if (CONFIG.AUTH_EDGE_URL) {
-    const res = await fetch(CONFIG.AUTH_EDGE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "signup",
-        username: u,
-        password,
-        display_name: dn,
-        gender: gender || null,
-        country: country || "",
-      }),
+  if (edgeUrl()) {
+    const { res, body } = await callAuthEdge({
+      action: "signup",
+      username: u,
+      password: String(password),
+      display_name: dn,
+      gender: gender || null,
+      country: country || "",
     });
-    const body = await res.json().catch(() => ({}));
+    if (res.status === 409 || body.error === "username_taken") {
+      throw new Error("این نام کاربری قبلاً گرفته شده است.");
+    }
+    if (res.status === 429 || body.error === "rate_limited") {
+      throw new Error("تعداد درخواست‌ها زیاد است. کمی صبر کنید و دوباره تلاش کنید.");
+    }
     if (!res.ok) {
-      if (body.error === "username_taken") throw new Error("این نام کاربری قبلاً گرفته شده است.");
-      throw new Error("ثبت‌نام ناموفق بود. بعداً تلاش کنید.");
+      throw new Error(mapEdgeError(body.error) || "ثبت‌نام ناموفق بود. بعداً تلاش کنید.");
     }
     return applySessionTokens(body);
   }
 
-  const sb = getSupabase();
-  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  const email = usernameToEmail(u);
-  const { data, error } = await sb.auth.signUp({
-    email,
-    password,
-    options: {
-      data: { display_name: dn, username: u },
-    },
-  });
-  if (error) {
-    const m = (error.message || "").toLowerCase();
-    if (m.includes("already") || m.includes("registered")) {
-      throw new Error("ثبت‌نام ناموفق بود. نام کاربری یا حساب تکراری است.");
-    }
-    throw new Error(faAuthError(error));
-  }
-  if (data.session) {
-    await claimProfileAfterAuth(u, dn, gender, country);
-  }
-  return data;
+  // Fallback بدون Edge: signup مستقیم (ممکن است با Confirm email یا rate-limit ایمیل شکست بخورد)
+  return signUpClientFallback(u, password, dn, gender, country);
 }
 
 export async function signInWithUsername(username, password) {
@@ -133,62 +124,81 @@ export async function signInWithUsername(username, password) {
     throw new Error("نام کاربری یا رمز عبور نادرست است.");
   }
 
-  if (CONFIG.AUTH_EDGE_URL) {
-    const res = await fetch(CONFIG.AUTH_EDGE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "login", username: u, password }),
+  if (edgeUrl()) {
+    const { res, body } = await callAuthEdge({
+      action: "login",
+      username: u,
+      password: String(password),
     });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error("نام کاربری یا رمز عبور نادرست است.");
+    if (!res.ok) {
+      throw new Error("نام کاربری یا رمز عبور نادرست است.");
+    }
     return applySessionTokens(body);
   }
 
+  return signInClientFallback(u, password);
+}
+
+function mapEdgeError(code) {
+  switch (code) {
+    case "username_taken":
+      return "این نام کاربری قبلاً گرفته شده است.";
+    case "invalid_credentials":
+      return "نام کاربری یا رمز عبور نادرست است.";
+    case "invalid_json":
+    case "unknown_action":
+      return "درخواست نامعتبر است.";
+    case "server_misconfigured":
+      return "سرویس احراز هویت پیکربندی نشده است.";
+    case "signup_failed":
+      return "ثبت‌نام ناموفق بود. بعداً تلاش کنید.";
+    case "rate_limited":
+      return "تعداد درخواست‌ها زیاد است. کمی صبر کنید.";
+    default:
+      return null;
+  }
+}
+
+async function signUpClientFallback(u, password, dn, gender, country) {
   const sb = getSupabase();
   if (!sb) throw new Error("Supabase پیکربندی نشده است.");
   const email = usernameToEmail(u);
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  // پیام یکسان — افشای وجود حساب نشود
-  if (error || !data.session) throw new Error("نام کاربری یا رمز عبور نادرست است.");
+  const { data, error } = await sb.auth.signUp({
+    email,
+    password: String(password),
+    options: { data: { display_name: dn, username: u } },
+  });
+  if (error) {
+    const m = (error.message || "").toLowerCase();
+    if (m.includes("rate") || m.includes("email rate")) {
+      throw new Error(
+        "سرویس ایمیل محدودیت دارد. AUTH_EDGE_URL را در config تنظیم و Edge Function را deploy کنید."
+      );
+    }
+    if (m.includes("already") || m.includes("registered")) {
+      throw new Error("این نام کاربری قبلاً گرفته شده است.");
+    }
+    throw new Error("ثبت‌نام ناموفق بود. تنظیمات Auth را بررسی کنید.");
+  }
+  if (!data.session) {
+    throw new Error(
+      "ثبت‌نام بدون نشست بود (احتمالاً تأیید ایمیل فعال است). Confirm email را خاموش کنید یا از Edge Function استفاده کنید."
+    );
+  }
+  await claimProfileAfterAuth(u, dn, gender, country);
   return data.session;
 }
 
-/** بازیابی رمز — همیشه پیام موفقیت‌آمیز یکسان (ضد enumeration) */
-export async function recoverUsernamePassword(username, redirectTo) {
-  const u = String(username || "").trim().toLowerCase();
-  if (!validateUsername(u)) {
-    // still generic
-    return;
-  }
-  if (CONFIG.AUTH_EDGE_URL) {
-    await fetch(CONFIG.AUTH_EDGE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "recover",
-        username: u,
-        password: "noop123", // satisfies server min length check path; recover ignores password
-        redirect_to: redirectTo || window.location.href,
-      }),
-    }).catch(() => {});
-    return;
-  }
-  const sb = getSupabase();
-  if (!sb) return;
-  await sb.auth.resetPasswordForEmail(usernameToEmail(u), {
-    redirectTo: redirectTo || window.location.href,
-  }).catch(() => {});
-}
-
-async function applySessionTokens(body) {
+async function signInClientFallback(u, password) {
   const sb = getSupabase();
   if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  const { error } = await sb.auth.setSession({
-    access_token: body.access_token,
-    refresh_token: body.refresh_token,
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: usernameToEmail(u),
+    password: String(password),
   });
-  if (error) throw new Error("نشست برقرار نشد.");
-  const { data } = await sb.auth.getSession();
+  if (error || !data.session) {
+    throw new Error("نام کاربری یا رمز عبور نادرست است.");
+  }
   return data.session;
 }
 
@@ -200,18 +210,16 @@ async function claimProfileAfterAuth(username, displayName, gender, country) {
     p_gender: gender || null,
     p_country: country || "",
   });
-  if (error) {
-    // fallback direct upsert if migration 004 not applied yet
-    const { data: { user } } = await sb.auth.getUser();
-    if (!user) return;
-    await sb.from("profiles").upsert({
-      id: user.id,
-      username,
-      display_name: displayName,
-      gender: gender || null,
-      country: country || "",
-    });
-  }
+  if (!error) return;
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  await sb.from("profiles").upsert({
+    id: user.id,
+    username,
+    display_name: displayName,
+    gender: gender || null,
+    country: country || "",
+  });
 }
 
 export async function finalizeProfileClaim(username, displayName, gender, country) {

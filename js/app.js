@@ -1,8 +1,7 @@
 import { CONFIG, isConfigured, assetUrl } from "../config.js";
 import {
-  getSession, onAuthChange, signOut, sendPhoneOtp, verifyPhoneOtp,
-  signInEmail, signUpEmail, signUpWithUsername, signInWithUsername,
-  recoverUsernamePassword, finalizeProfileClaim,
+  getSession, onAuthChange, signOut,
+  signUpWithUsername, signInWithUsername, finalizeProfileClaim,
 } from "./auth.js";
 import {
   ensureProfile, updateProfile, searchUsers, uploadAvatar,
@@ -105,10 +104,9 @@ function renderAuthScreen(errMsg = "") {
   card.append(brand());
 
   const tabs = el("div", { class: "tabs" });
-  const userTab = el("button", { class: "active", type: "button", text: "نام کاربری" });
-  const phoneTab = el("button", { type: "button", text: "تلفن" });
-  const emailTab = el("button", { type: "button", text: "ایمیل" });
-  tabs.append(userTab, phoneTab, emailTab);
+  const loginTab = el("button", { class: "active", type: "button", text: "ورود" });
+  const regTab = el("button", { type: "button", text: "ثبت‌نام" });
+  tabs.append(loginTab, regTab);
 
   const errBox = el("div", { class: errMsg ? "msg-error" : "msg-error hidden", text: errMsg || "" });
   const body = el("div");
@@ -122,15 +120,12 @@ function renderAuthScreen(errMsg = "") {
     setText(errBox, "");
   }
 
-  function usernameForm(mode) {
+  function form(mode) {
     body.replaceChildren();
     const isReg = mode === "register";
-    body.append(el("div", {
-      class: "msg-info",
-      text: isReg
-        ? "رمز عبور فقط در سیستم احراز هویت ذخیره می‌شود (نه در پروفایل). نام کاربری یکتا الزامی است."
-        : "ورود با نام کاربری و رمز عبور.",
-    }));
+    loginTab.classList.toggle("active", !isReg);
+    regTab.classList.toggle("active", isReg);
+
     if (isReg) {
       body.append(el("div", { class: "field" }, [
         el("label", { text: "نام نمایشی" }),
@@ -144,7 +139,12 @@ function renderAuthScreen(errMsg = "") {
       ]),
       el("div", { class: "field" }, [
         el("label", { text: "رمز عبور" }),
-        el("input", { id: "pw", type: "password", placeholder: "حداقل ۶ کاراکتر", autocomplete: isReg ? "new-password" : "current-password" }),
+        el("input", {
+          id: "pw",
+          type: "password",
+          placeholder: "حداقل ۶ کاراکتر",
+          autocomplete: isReg ? "new-password" : "current-password",
+        }),
       ]),
     );
     if (isReg) {
@@ -154,7 +154,13 @@ function renderAuthScreen(errMsg = "") {
           el("label", { text: "جنسیت (اختیاری)" }),
           (() => {
             const s = el("select", { id: "gender" });
-            for (const [v, l] of [["", "—"], ["male", "مرد"], ["female", "زن"], ["other", "سایر"], ["unspecified", "ترجیح می‌دهم نگویم"]]) {
+            for (const [v, l] of [
+              ["", "—"],
+              ["male", "مرد"],
+              ["female", "زن"],
+              ["other", "سایر"],
+              ["unspecified", "ترجیح می‌دهم نگویم"],
+            ]) {
               s.append(el("option", { value: v, text: l }));
             }
             return s;
@@ -167,27 +173,23 @@ function renderAuthScreen(errMsg = "") {
       );
       body.append(row);
     }
+
     const btn = el("button", {
-      class: "btn btn-primary", type: "button",
+      class: "btn btn-primary",
+      type: "button",
       text: isReg ? "ثبت‌نام" : "ورود",
     });
     body.append(btn);
-    if (!isReg) {
-      const rec = el("button", { class: "btn btn-ghost", type: "button", text: "بازیابی رمز عبور", style: "margin-top:8px" });
-      body.append(rec);
-      rec.onclick = async () => {
-        clearErr();
-        await recoverUsernamePassword($("#uname").value);
-        toast("اگر حسابی با این نام کاربری وجود داشته باشد، دستور بازیابی ارسال می‌شود.");
-      };
-      const toReg = el("button", { class: "btn btn-ghost", type: "button", text: "ساخت حساب جدید", style: "margin-top:8px" });
-      body.append(toReg);
-      toReg.onclick = () => usernameForm("register");
-    } else {
-      const toLogin = el("button", { class: "btn btn-ghost", type: "button", text: "حساب دارم — ورود", style: "margin-top:8px" });
-      body.append(toLogin);
-      toLogin.onclick = () => usernameForm("login");
-    }
+
+    const switchBtn = el("button", {
+      class: "btn btn-ghost",
+      type: "button",
+      style: "margin-top:8px",
+      text: isReg ? "حساب دارم — ورود" : "ساخت حساب جدید",
+    });
+    body.append(switchBtn);
+    switchBtn.onclick = () => form(isReg ? "login" : "register");
+
     btn.onclick = async () => {
       clearErr();
       btn.disabled = true;
@@ -200,123 +202,31 @@ function renderAuthScreen(errMsg = "") {
             gender: $("#gender")?.value || null,
             country: $("#country")?.value || "",
           });
-          // اگر session بلافاصله نبود (تأیید ایمیل)، راهنما
-          const s = await getSession();
-          if (!s) toast("ثبت‌نام انجام شد. اگر تأیید ایمیل فعال است، صندوق را بررسی کنید؛ در غیر این صورت وارد شوید.");
-          else {
-            try {
-              await finalizeProfileClaim(
-                $("#uname").value.trim().toLowerCase(),
-                ($("#dn")?.value || $("#uname").value).trim(),
-                $("#gender")?.value || null,
-                $("#country")?.value || "",
-              );
-            } catch (_) { /* profile may already exist via edge */ }
+          try {
+            await finalizeProfileClaim(
+              $("#uname").value.trim().toLowerCase(),
+              ($("#dn")?.value || $("#uname").value).trim(),
+              $("#gender")?.value || null,
+              $("#country")?.value || "",
+            );
+          } catch (_) {
+            /* profile may already exist via edge */
           }
         } else {
           await signInWithUsername($("#uname").value, $("#pw").value);
         }
       } catch (e) {
-        showErr(e.message || faAuthError(e));
+        showErr(e.message || "خطا در احراز هویت");
       } finally {
         btn.disabled = false;
       }
     };
   }
 
-  function phoneForm() {
-    body.replaceChildren();
-    if (!CONFIG.ENABLE_PHONE_AUTH) {
-      body.append(el("div", { class: "msg-info", text: "احراز هویت تلفنی در config غیرفعال است." }));
-      return;
-    }
-    body.append(el("div", { class: "msg-info", text: "نیاز به SMS Provider فعال در Supabase Auth دارد." }));
-    const row = el("div", { class: "row" });
-    row.append(
-      el("div", { class: "field" }, [el("label", { text: "کد کشور" }), el("input", { id: "cc", value: "98", inputmode: "numeric" })]),
-      el("div", { class: "field" }, [el("label", { text: "شماره موبایل" }), el("input", { id: "phone", placeholder: "9121234567", inputmode: "numeric" })]),
-    );
-    body.append(row);
-    const otpField = el("div", { class: "field hidden", id: "otp-wrap" }, [
-      el("label", { text: "کد تأیید" }),
-      el("input", { id: "otp", placeholder: "123456", inputmode: "numeric" }),
-    ]);
-    body.append(otpField);
-    const btn = el("button", { class: "btn btn-primary", type: "button", text: "ارسال کد" });
-    const btnVerify = el("button", { class: "btn btn-primary hidden", type: "button", text: "تأیید کد" });
-    body.append(btn, el("div", { style: "height:8px" }), btnVerify);
-    btn.onclick = async () => {
-      clearErr();
-      btn.disabled = true;
-      try {
-        if (Date.now() < state.resendAt) throw new Error("برای ارسال مجدد کمی صبر کنید.");
-        const p = await sendPhoneOtp($("#cc").value, $("#phone").value);
-        state.phonePending = p;
-        state.resendAt = Date.now() + 60000;
-        otpField.classList.remove("hidden");
-        btnVerify.classList.remove("hidden");
-        setText(btn, "ارسال مجدد کد");
-        toast("اگر SMS پیکربندی شده باشد، کد ارسال می‌شود.");
-      } catch (e) {
-        showErr(faAuthError(e));
-      } finally {
-        btn.disabled = false;
-      }
-    };
-    btnVerify.onclick = async () => {
-      clearErr();
-      btnVerify.disabled = true;
-      try {
-        await verifyPhoneOtp(state.phonePending, $("#otp").value.trim());
-      } catch (e) {
-        showErr(faAuthError(e));
-      } finally {
-        btnVerify.disabled = false;
-      }
-    };
-  }
-
-  function emailForm() {
-    body.replaceChildren();
-    if (!CONFIG.ENABLE_EMAIL_DEV_AUTH) {
-      body.append(el("div", { class: "msg-info", text: "ورود ایمیلی در config غیرفعال است." }));
-      return;
-    }
-    body.append(el("div", { class: "msg-info", text: "مسیر ایمیل برای مواقعی است که تلفن یا Edge Function آماده نیست." }));
-    body.append(
-      el("div", { class: "field" }, [el("label", { text: "نام نمایشی" }), el("input", { id: "dn", placeholder: "نام شما" })]),
-      el("div", { class: "field" }, [el("label", { text: "ایمیل" }), el("input", { id: "em", type: "email", placeholder: "you@example.com" })]),
-      el("div", { class: "field" }, [el("label", { text: "رمز عبور" }), el("input", { id: "pw", type: "password" })]),
-    );
-    const row = el("div", { class: "row" });
-    const loginBtn = el("button", { class: "btn btn-primary", type: "button", text: "ورود" });
-    const regBtn = el("button", { class: "btn btn-ghost", type: "button", text: "ثبت‌نام" });
-    row.append(loginBtn, regBtn);
-    body.append(row);
-    loginBtn.onclick = async () => {
-      clearErr();
-      try { await signInEmail($("#em").value.trim(), $("#pw").value); }
-      catch (e) { showErr(faAuthError(e)); }
-    };
-    regBtn.onclick = async () => {
-      clearErr();
-      try {
-        await signUpEmail($("#em").value.trim(), $("#pw").value, $("#dn").value.trim());
-        toast("ثبت‌نام انجام شد.");
-      } catch (e) { showErr(faAuthError(e)); }
-    };
-  }
-
-  function setTab(active) {
-    for (const b of [userTab, phoneTab, emailTab]) b.classList.remove("active");
-    active.classList.add("active");
-  }
-  userTab.onclick = () => { setTab(userTab); usernameForm("login"); };
-  phoneTab.onclick = () => { setTab(phoneTab); phoneForm(); };
-  emailTab.onclick = () => { setTab(emailTab); emailForm(); };
-
+  loginTab.onclick = () => form("login");
+  regTab.onclick = () => form("register");
   card.append(tabs, errBox, body);
-  usernameForm("login");
+  form("login");
   wrap.append(card);
   return wrap;
 }

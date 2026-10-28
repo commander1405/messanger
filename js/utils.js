@@ -77,11 +77,14 @@ export function normalizePhone(countryCode, national) {
 
 export function faAuthError(err) {
   const m = (err?.message || err?.error_description || String(err || "")).toLowerCase();
-  if (m.includes("invalid login")) return "ورود نامعتبر است.";
-  if (m.includes("email")) return "ایمیل یا رمز اشتباه است.";
-  if (m.includes("otp") || m.includes("token") || m.includes("code")) return "کد تأیید نامعتبر یا منقضی شده است.";
-  if (m.includes("rate") || m.includes("sms")) return "محدودیت ارسال پیامک. کمی بعد تلاش کنید.";
-  if (m.includes("phone")) return "شماره تلفن نامعتبر است یا سرویس پیامک پیکربندی نشده.";
-  if (m.includes("network") || m.includes("fetch")) return "خطای شبکه. اتصال اینترنت را بررسی کنید.";
+  if (m.includes("rate") && m.includes("email")) {
+    return "محدودیت سرویس. از Edge Function احراز هویت استفاده کنید.";
+  }
+  if (m.includes("invalid login") || m.includes("invalid credentials")) {
+    return "نام کاربری یا رمز عبور نادرست است.";
+  }
+  if (m.includes("network") || m.includes("fetch") || m.includes("failed to fetch")) {
+    return "خطای شبکه. اتصال اینترنت را بررسی کنید.";
+  }
   return err?.message || "خطایی رخ داد.";
 }

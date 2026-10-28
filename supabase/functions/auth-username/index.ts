@@ -70,6 +70,14 @@ Deno.serve(async (req) => {
 
   try {
     if (action === "signup") {
+      // pre-check username uniqueness in profiles
+      const { data: existing } = await admin
+        .from("profiles")
+        .select("id")
+        .eq("username", username)
+        .maybeSingle();
+      if (existing) return json({ error: "username_taken" }, 409);
+
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
         email,
         password,
@@ -77,7 +85,11 @@ Deno.serve(async (req) => {
         user_metadata: { display_name: displayName, username },
       });
       if (createErr) {
-        // uniform message
+        const msg = String(createErr.message || "").toLowerCase();
+        if (msg.includes("already") || msg.includes("registered") || msg.includes("exists")) {
+          return json({ error: "username_taken" }, 409);
+        }
+        console.error("createUser", createErr);
         return json({ error: "signup_failed" }, 400);
       }
       const uid = created.user?.id;

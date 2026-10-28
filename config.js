@@ -17,13 +17,13 @@ export const CONFIG = {
 
   // احراز هویت
   // phone نیاز به SMS Provider در Supabase Auth دارد
-  ENABLE_PHONE_AUTH: true,
+  ENABLE_PHONE_AUTH: false,
   // حالت توسعه: ایمیل/رمز — فقط وقتی SMS آماده نیست. تولید واقعی نیست.
-  ENABLE_EMAIL_DEV_AUTH: true,
+  ENABLE_EMAIL_DEV_AUTH: false,
   // مسیر Edge Function احراز هویت با نام کاربری (پس از deploy)
   // مثال: https://xxxx.supabase.co/functions/v1/auth-username
   // اگر خالی باشد از ایمیل مصنوعی username@users.darkknight.local استفاده می‌شود
-  AUTH_EDGE_URL: "",
+  AUTH_EDGE_URL: "https://eiofkondgzhiravpjcid.supabase.co/functions/v1/auth-username",
   ENABLE_GOOGLE_LOGIN: false,
 
   // تماس‌ها تا زیرساخت WebRTC/TURN آماده نشود خاموش بمانند

@@ -1,86 +1,53 @@
 # DarkKnight Messenger
 
-پیام‌رسان مدرن با رابط تاریک، راست‌چین و پشتیبانی فارسی.
+پیام‌رسان مدرن فارسی با تم تاریک.
 
 - **فرانت‌اند:** HTML / CSS / Vanilla JS (ES Modules)
 - **بک‌اند:** Supabase (Auth, Postgres, Realtime, Storage)
-- **دیپلوی:** GitHub Pages
+- **دیپلوی:** GitHub Pages → https://commander1405.github.io/messanger/
 
-## آدرس‌ها
+## احراز هویت (فقط نام کاربری + رمز)
 
-- مخزن: https://github.com/commander1405/messanger
-- GitHub Pages (پس از فعال‌سازی Actions): https://commander1405.github.io/messanger/
+تنها روش ورود/ثبت‌نام: **نام کاربری و رمز عبور**.
 
-## راه‌اندازی
+- رمز فقط در **Supabase Auth** ذخیره می‌شود (هش‌شده).
+- نام کاربری در جدول `profiles` با قید UNIQUE.
+- مسیر اصلی: Edge Function `auth-username` تا ایمیل تأیید ارسال نشود و rate-limit ایمیل پیش نیاید.
 
-### 1) Supabase
+### تنظیمات ضروری
 
-1. پروژه در supabase.com بسازید.
-2. در SQL Editor به ترتیب اجرا کنید:
+1. در SQL Editor به ترتیب:
    - `sql/001_schema.sql`
    - `sql/002_rls.sql`
    - `sql/003_storage.sql`
-3. Authentication → Providers: Phone (با SMS Provider) و در صورت نیاز Email برای توسعه
-4. Authentication → URL Configuration:
-   - Site URL: `https://commander1405.github.io/messanger/`
-   - Redirect: همان آدرس
-5. Database → Replication: جداول `messages` و `typing_status` برای Realtime
-6. Settings → API: Project URL و anon key
+   - `sql/004_phase2.sql`
+2. Deploy Edge Function:
+   ```bash
+   supabase functions deploy auth-username --no-verify-jwt
+   ```
+3. در `config.js`:
+   ```js
+   SUPABASE_URL: "https://xxxx.supabase.co",
+   SUPABASE_ANON_KEY: "your-anon-or-publishable-key",
+   AUTH_EDGE_URL: "https://xxxx.supabase.co/functions/v1/auth-username",
+   BASE_PATH: "/messanger",
+   ```
+4. Realtime: جداول `messages` و `typing_status`
+5. Auth → Confirm email می‌تواند روشن بماند چون ساخت کاربر از Admin API با `email_confirm: true` انجام می‌شود.
 
-### 2) config.js
+### محدودیت بازیابی رمز
 
-```js
-SUPABASE_URL: "https://xxxx.supabase.co",
-SUPABASE_ANON_KEY: "eyJhbGciOi...",
-BASE_PATH: "/messanger",
-```
-
-**هرگز service_role را در فرانت یا گیت قرار ندهید.**
-
-### 3) GitHub Pages
-
-Settings → Pages → Source: **GitHub Actions**  
-بعد از push روی `main`، workflow دیپلوی اجرا می‌شود.
-
-## قابلیت‌ها
-
-| قابلیت | وضعیت |
-|--------|--------|
-| تلفن + OTP | پیاده — نیاز SMS Provider |
-| ایمیل توسعه | پیاده — فقط تست |
-| پروفایل / username یکتا | پیاده + UNIQUE در DB |
-| چت خصوصی Realtime | پیاده |
-| گروه و کانال | پیاده با نقش و RLS |
-| پیوست | پیاده + Storage RLS |
-| تایپینگ | پیاده |
-| تماس صوتی/تصویری | خاموش تا WebRTC/TURN |
+چون کاربر ایمیل واقعی وارد نمی‌کند، **بازیابی رمز از طریق ایمیل در UI وجود ندارد**. برای بازیابی باید از پنل Supabase Auth یا جریان سفارشی آینده استفاده شود.
 
 ## امنیت
 
-RLS روی جداول اصلی، Storage محدود، رندر پیام با textContent، RPC امن برای ساخت گفتگو.
+- RLS روی جداول اصلی
+- رمز در profiles ذخیره نمی‌شود
+- service_role فقط داخل Edge Function
+- پیوست‌ها از طریق Signed URL
 
-## تماس
+## ساختار
 
-برای تماس واقعی: سیگنالینگ + STUN/TURN لازم است. تا آن زمان فلگ‌ها در config خاموش‌اند.
-
-
-## فاز ۲
-
-Migration جدید: `sql/004_phase2.sql` (پس از 001–003)
-
-### ورود با نام کاربری
-
-- رمز فقط در **Supabase Auth** ذخیره می‌شود (هش‌شده).
-- مسیر پیشنهادی تولید: Edge Function `supabase/functions/auth-username`
-  ```bash
-  supabase functions deploy auth-username
-  ```
-  سپس در `config.js`:
-  ```js
-  AUTH_EDGE_URL: "https://YOUR_PROJECT.supabase.co/functions/v1/auth-username"
-  ```
-- بدون Edge Function: ایمیل مصنوعی `username@users.darkknight.local` (تأیید ایمیل را در Auth خاموش کنید).
-
-### Realtime
-
-در Dashboard برای جداول `messages` و `typing_status` گزینه Replication را فعال کنید.
+```
+index.html  config.js  css/  js/  sql/  supabase/functions/auth-username/
+```
