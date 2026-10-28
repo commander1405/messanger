@@ -63,24 +63,49 @@ export async function updateProfile(patch) {
 
 export async function searchUsers(q) {
   const sb = getSupabase();
-  const query = (q || "").trim().replace(/^@/, "");
-  if (query.length < 2) return [];
+  let query = (q || "").trim();
+  if (query.startsWith("@")) query = query.slice(1);
+  query = query.toLowerCase();
+  if (query.length < 1) return [];
+  // فقط کاراکترهای امن برای فیلتر
+  const safe = query.replace(/[^a-z0-9_\s\u0600-\u06FF]/gi, "").slice(0, 40);
+  if (!safe) return [];
 
-  // Prefer secure RPC (phase2 migration)
   const { data: rpcData, error: rpcErr } = await sb.rpc("search_profiles", {
-    p_query: query,
+    p_query: safe,
     p_limit: 20,
   });
   if (!rpcErr && Array.isArray(rpcData)) return rpcData;
 
-  // Fallback if migration not applied
+  // exact username first
+  const { data: exact } = await sb
+    .from("profiles")
+    .select("id, username, display_name, avatar_url, bio")
+    .eq("username", safe)
+    .limit(5);
+  if (exact?.length) return exact;
+
   const { data, error } = await sb
     .from("profiles")
     .select("id, username, display_name, avatar_url, bio")
-    .or(`username.ilike.%${query}%,display_name.ilike.%${query}%`)
+    .or(`username.ilike.%${safe}%,display_name.ilike.%${safe}%`)
     .limit(20);
   if (error) throw error;
   return data || [];
+}
+
+export async function findUserByUsername(username) {
+  const sb = getSupabase();
+  let u = String(username || "").trim().toLowerCase();
+  if (u.startsWith("@")) u = u.slice(1);
+  if (!u) return null;
+  const { data, error } = await sb
+    .from("profiles")
+    .select("id, username, display_name, avatar_url, bio")
+    .eq("username", u)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
 export async function getPublicProfile(id) {

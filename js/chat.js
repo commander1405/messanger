@@ -57,7 +57,23 @@ export async function listConversations() {
     } else {
       c.last_preview = c.type === "channel" ? "کانال" : c.type === "group" ? "گروه" : "بدون پیام";
     }
+
+    c.is_saved = (
+      c.type === "group" &&
+      c.title === "پیام‌های شخصی" &&
+      c.created_by === user.id
+    );
+    if (c.is_saved) {
+      c.title = "پیام‌های شخصی";
+      c.last_preview = c.last_preview || "یادداشت‌ها و میانبر @username";
+    }
   }
+
+  items.sort((a, b) => {
+    if (a.is_saved && !b.is_saved) return -1;
+    if (!a.is_saved && b.is_saved) return 1;
+    return new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0);
+  });
   return items;
 }
 
@@ -66,6 +82,46 @@ export async function openPrivateChat(otherUserId) {
   const { data, error } = await sb.rpc("create_private_conversation", { other_user: otherUserId });
   if (error) throw error;
   return data;
+}
+
+/** گفتگوی «پیام‌های شخصی» — ذخیره برای خود کاربر */
+export async function ensureSavedMessages() {
+  const sb = getSupabase();
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return null;
+
+  const { data: memberships } = await sb
+    .from("conversation_members")
+    .select("conversation_id, conversations:conversation_id(id, type, title, created_by)")
+    .eq("user_id", user.id);
+
+  const existing = (memberships || []).find((m) => {
+    const c = m.conversations;
+    return c && c.type === "group" && c.title === "پیام‌های شخصی" && c.created_by === user.id;
+  });
+  if (existing?.conversations?.id) return existing.conversations.id;
+
+  // ساخت گروه فقط با خود کاربر
+  const { data: id, error } = await sb.rpc("create_group_conversation", {
+    p_title: "پیام‌های شخصی",
+    p_member_ids: [],
+  });
+  if (error) {
+    // fallback بدون RPC
+    const { data: conv, error: e2 } = await sb
+      .from("conversations")
+      .insert({ type: "group", title: "پیام‌های شخصی", created_by: user.id })
+      .select("id")
+      .single();
+    if (e2) throw e2;
+    await sb.from("conversation_members").insert({
+      conversation_id: conv.id,
+      user_id: user.id,
+      role: "owner",
+    });
+    return conv.id;
+  }
+  return id;
 }
 
 export async function createGroup(title, memberIds = []) {

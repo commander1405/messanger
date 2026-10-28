@@ -597,3 +597,60 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 @media (max-width: 859px) {
   .sidebar { max-width: none; border-left: none; }
 }
+
+/* Panel overlay (search / settings / profile) */
+.panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.panel-overlay .panel,
+.panel.sheet {
+  width: 100%;
+  max-width: 440px;
+  max-height: 88vh;
+  background: var(--bg-1);
+  border-radius: 18px 18px 0 0;
+  padding: 16px 16px calc(16px + var(--safe-b));
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+  animation: panelUp 0.2s ease-out;
+}
+.panel-inner { display: flex; flex-direction: column; gap: 8px; }
+.panel-inner h3 { margin: 0; }
+.mention {
+  color: var(--accent-2);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.mention:hover { text-decoration: underline; }
+.list-item.saved .avatar {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.role-tag {
+  font-size: 0.72rem;
+  color: var(--text-mute);
+  background: var(--bg-2);
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+@media (min-width: 860px) {
+  .panel-overlay { align-items: center; }
+  .panel-overlay .panel, .panel.sheet {
+    border-radius: 16px;
+    max-height: 80vh;
+  }
+}
