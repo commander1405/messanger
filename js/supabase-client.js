@@ -19,3 +19,7 @@ export function getSupabase() {
   }
   return client;
 }
+
+export function resetSupabaseClient() {
+  client = null;
+}

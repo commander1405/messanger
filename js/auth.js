@@ -70,15 +70,52 @@ async function applySessionTokens(body) {
   if (!body?.access_token || !body?.refresh_token) {
     throw new Error("نشست معتبر از سرور دریافت نشد.");
   }
-  const { data, error } = await sb.auth.setSession({
+
+  // setSession می‌تواند با listenerهای async در onAuthStateChange قفل شود.
+  // با timeout و در صورت نیاز نوشتن مستقیم storage از بن‌بست جلوگیری می‌کنیم.
+  const sessionPromise = sb.auth.setSession({
     access_token: body.access_token,
     refresh_token: body.refresh_token,
   });
+  const timed = await Promise.race([
+    sessionPromise,
+    new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), 4000)),
+  ]);
+
+  if (timed && timed.__timeout) {
+    // ذخیرهٔ مستقیم نشست در همان storageKey کلاینت
+    const storageKey = "dk-messenger-auth";
+    const expiresIn = Number(body.expires_in || 3600);
+    const payload = {
+      access_token: body.access_token,
+      refresh_token: body.refresh_token,
+      token_type: body.token_type || "bearer",
+      expires_in: expiresIn,
+      expires_at: Math.floor(Date.now() / 1000) + expiresIn,
+      user: body.user || null,
+    };
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(payload));
+    } catch (_) {
+      /* ignore quota */
+    }
+    // کلاینت را تازه کن تا نشست را از storage بخواند
+    const { resetSupabaseClient } = await import("./supabase-client.js");
+    if (typeof resetSupabaseClient === "function") resetSupabaseClient();
+    const sb2 = getSupabase();
+    const { data: d2, error: e2 } = await sb2.auth.getSession();
+    if (e2 || !d2.session) {
+      throw new Error("نشست برقرار نشد. صفحه را یک‌بار رفرش کنید.");
+    }
+    return d2.session;
+  }
+
+  const { data, error } = timed;
   if (error) {
     console.error("setSession failed", error.message);
     throw new Error("نشست برقرار نشد. صفحه را رفرش کنید و دوباره وارد شوید.");
   }
-  if (!data.session) throw new Error("نشست برقرار نشد.");
+  if (!data?.session) throw new Error("نشست برقرار نشد.");
   return data.session;
 }
 

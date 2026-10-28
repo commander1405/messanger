@@ -76,11 +76,14 @@ export async function boot() {
   }
 
   // رویدادهای بعدی (ورود/خروج) — INITIAL_SESSION را نادیده می‌گیریم تا دوبار رندر نشود
-  onAuthChange(async (event, session) => {
+  onAuthChange((event, session) => {
     if (event === "INITIAL_SESSION") return;
     state.session = session;
     if (session) {
-      await enterApp();
+      // بدون await تا setSession قفل نشود
+      setTimeout(() => {
+        enterApp().catch((e) => console.error("enterApp", e));
+      }, 0);
     } else {
       if (state.presenceStop) {
         try { state.presenceStop(); } catch (_) {}
