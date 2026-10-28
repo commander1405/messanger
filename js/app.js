@@ -12,12 +12,15 @@ import {
   subscribeMessages, subscribeTyping, setTyping, uploadAttachment, getAttachmentUrl,
   createGroup, createChannel, searchPublicChannels, joinPublicChannel,
   listMembers, groupAddMember, groupLeave, ensureSavedMessages,
+  editMessage, deleteMessage, setConversationArchived, setConversationMuted, toggleReaction,
 } from "./chat.js";
 import { $, el, setText, formatTime, initials, toast, icon, faAuthError } from "./utils.js";
 
 const state = {
   session: null,
   profile: null,
+  replyTo: null,
+  editingId: null,
   conversations: [],
   activeId: null,
   messages: [],
@@ -369,6 +372,7 @@ async function showMain() {
     { id: "group", label: "گروه‌ها" },
     { id: "channel", label: "کانال‌ها" },
     { id: "unread", label: "خوانده‌نشده" },
+    { id: "archived", label: "آرشیو" },
   ];
   state.listFilter = state.listFilter || "all";
   for (const f of filterDefs) {
@@ -393,9 +397,10 @@ async function showMain() {
   sidebar.append(header, searchBar, filters, list);
 
   const chat = el("section", { class: "chat", id: "chat-pane" });
-  chat.append(el("div", { class: "empty" }, [
-    el("strong", { text: "گفتگویی انتخاب نشده" }),
-    el("span", { text: "از فهرست یک گفتگو را باز کنید یا با جستجو گفتگوی جدید بسازید." }),
+  chat.append(el("div", { class: "empty chat-empty" }, [
+    el("img", { src: assetUrl("assets/logo.svg"), alt: "", class: "empty-logo" }),
+    el("strong", { text: "DarkKnight Messenger" }),
+    el("span", { text: "گفتگویی را انتخاب کنید یا با جستجو گفتگوی جدید بسازید." }),
   ]));
 
   main.append(sidebar, chat);
@@ -438,10 +443,14 @@ async function refreshConversations() {
     state.conversations = await listConversations();
     const f = state.listFilter || "all";
     let rows = state.conversations || [];
-    if (f === "private") rows = rows.filter((c) => c.type === "private");
-    else if (f === "group") rows = rows.filter((c) => c.type === "group");
-    else if (f === "channel") rows = rows.filter((c) => c.type === "channel");
-    else if (f === "unread") rows = rows.filter((c) => (c.unread || 0) > 0);
+    if (f === "archived") rows = rows.filter((c) => c.archived);
+    else {
+      rows = rows.filter((c) => !c.archived);
+      if (f === "private") rows = rows.filter((c) => c.type === "private");
+      else if (f === "group") rows = rows.filter((c) => c.type === "group");
+      else if (f === "channel") rows = rows.filter((c) => c.type === "channel");
+      else if (f === "unread") rows = rows.filter((c) => (c.unread || 0) > 0);
+    }
 
     list.replaceChildren();
     if (!rows.length) {
@@ -524,7 +533,7 @@ function renderConvItem(c) {
   item.dataset.title = title;
   item.dataset.preview = preview;
   const av = el("div", { class: "avatar" });
-  if (c.is_saved) setText(av, "📝");
+  if (c.is_saved) setText(av, "DM");
   else if (c.avatar_url) av.append(el("img", { src: c.avatar_url, alt: "" }));
   else setText(av, initials(title));
   const meta = el("div", { class: "list-meta" }, [
@@ -534,7 +543,8 @@ function renderConvItem(c) {
     ]),
     el("div", { class: "preview" }, [
       el("span", { text: preview }),
-      c.unread ? el("span", { class: "badge", text: String(c.unread) }) : null,
+      c.unread && !c.muted ? el("span", { class: "badge", text: String(c.unread) }) : null,
+      c.unread && c.muted ? el("span", { class: "badge muted-badge", text: String(c.unread) }) : null,
     ]),
   ]);
   item.append(av, meta);
@@ -570,6 +580,19 @@ async function openConversation(id) {
 
   const messagesEl = el("div", { class: "messages", id: "messages" });
   const typingEl = el("div", { class: "typing", id: "typing" });
+  const replyBar = el("div", { class: "reply-bar hidden", id: "reply-bar" });
+  const replyLabel = el("div", { class: "reply-bar-text" });
+  const replyCancel = el("button", {
+    class: "icon-btn", type: "button", title: "لغو",
+    onclick: () => {
+      state.replyTo = null;
+      state.editingId = null;
+      replyBar.classList.add("hidden");
+      ta.placeholder = "پیام بنویسید...";
+    },
+  }, [icon("close")]);
+  replyBar.append(replyLabel, replyCancel);
+
   const composer = el("div", { class: "composer" });
   const fileInput = el("input", { type: "file", class: "hidden", id: "file-input" });
   const attachBtn = el("button", {
@@ -580,7 +603,15 @@ async function openConversation(id) {
   const sendBtn = el("button", { class: "send", type: "button", title: "ارسال" }, [icon("send")]);
   composer.append(attachBtn, fileInput, ta, sendBtn);
 
-  pane.replaceChildren(header, messagesEl, typingEl, composer);
+  // chat menu in header
+  header.append(el("button", {
+    class: "icon-btn", type: "button", title: "منوی گفتگو",
+    onclick: () => openChatMenu(id, conv),
+  }, [icon("settings")]));
+
+  pane.replaceChildren(header, messagesEl, typingEl, replyBar, composer);
+
+  window.__dkReplyBar = { bar: replyBar, label: replyLabel, input: ta };
 
   try {
     state.messages = await loadMessages(id);
@@ -617,31 +648,46 @@ async function openConversation(id) {
     typingTimer = setTimeout(() => setTyping(id), 400);
   });
 
-  async function doSend(attachment = null) {
-    if (state.sending) return;
+    async function doSend(attachment = null) {
     const body = ta.value;
     if (!body.trim() && !attachment) return;
-    if (!navigator.onLine) {
-      toast("آفلاین هستید. پس از اتصال دوباره تلاش کنید.");
+    if (state.editingId) {
+      const editId = state.editingId;
+      sendBtn.disabled = true;
+      try {
+        const updated = await editMessage(editId, body);
+        state.messages = state.messages.map((x) => (x.id === editId ? { ...x, ...updated, body: body.trim(), edited_at: updated.edited_at || new Date().toISOString() } : x));
+        state.editingId = null;
+        replyBar.classList.add("hidden");
+        ta.value = "";
+        renderMessages(messagesEl, state.messages, { conversationId: id });
+      } catch (e) {
+        toast(e.message || "ویرایش ناموفق");
+      } finally {
+        sendBtn.disabled = false;
+        ta.focus();
+      }
       return;
     }
+    const replyTo = state.replyTo?.id || null;
     ta.value = "";
-    state.sending = true;
+    state.replyTo = null;
+    replyBar.classList.add("hidden");
     sendBtn.disabled = true;
     try {
-      const msg = await sendMessage(id, body, attachment);
-      if (!state.messages.some((m) => m.id === msg.id || (msg.client_id && m.client_id === msg.client_id))) {
-        state.messages.push(msg);
-        renderMessages(messagesEl, state.messages, { conversationId: id });
-      }
+      const msg = await sendMessage(id, body, attachment, { replyTo });
+      state.messages = [...state.messages, msg];
+      renderMessages(messagesEl, state.messages, { conversationId: id });
+      await refreshConversations();
     } catch (e) {
       ta.value = body;
       toast(e.message || "ارسال ناموفق");
     } finally {
-      state.sending = false;
       sendBtn.disabled = false;
+      ta.focus();
     }
   }
+
   sendBtn.onclick = () => doSend();
   ta.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && !ev.shiftKey) {
@@ -731,12 +777,33 @@ function renderMessages(container, messages, opts = {}) {
     });
     container.append(loadBtn);
   }
+
+  let lastDay = "";
   for (const m of messages) {
+    const day = (m.created_at || "").slice(0, 10);
+    if (day && day !== lastDay) {
+      lastDay = day;
+      container.append(el("div", { class: "day-sep", text: formatDayLabel(day) }));
+    }
     const mine = m.sender_id === state.profile?.id;
     const bubble = el("div", { class: `msg ${mine ? "mine" : "theirs"}` });
-    const textNode = el("div");
+    bubble.dataset.id = m.id;
+
+    if (m.reply_to_id) {
+      const parent = messages.find((x) => x.id === m.reply_to_id);
+      const replyPrev = el("div", { class: "msg-reply" });
+      setText(replyPrev, parent ? (parent.body || "پیام").slice(0, 80) : "پاسخ به پیام");
+      bubble.append(replyPrev);
+    }
+
+    if (!mine && m.profiles?.display_name && opts.showSender) {
+      bubble.append(el("div", { class: "msg-sender", text: m.profiles.display_name }));
+    }
+
+    const textNode = el("div", { class: "msg-body" });
     appendMessageBody(textNode, m.body || "");
     bubble.append(textNode);
+
     if (m.attachment_path) {
       const box = el("div", { class: "attach" });
       const mime = m.attachment_mime || "";
@@ -750,11 +817,159 @@ function renderMessages(container, messages, opts = {}) {
         .catch(() => setText(box, "پیوست در دسترس نیست"));
       bubble.append(box);
     }
-    bubble.append(el("div", { class: "meta", text: formatTime(m.created_at) }));
+
+    const metaBits = [formatTime(m.created_at)];
+    if (m.edited_at) metaBits.push("ویرایش‌شده");
+    bubble.append(el("div", { class: "meta", text: metaBits.join(" · ") }));
+
+    bubble.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      openMessageMenu(m, opts.conversationId, ev.clientX, ev.clientY);
+    });
+    bubble.addEventListener("dblclick", () => startReply(m));
+
     container.append(bubble);
   }
   container.scrollTop = container.scrollHeight;
 }
+
+function formatDayLabel(isoDay) {
+  try {
+    const d = new Date(isoDay + "T12:00:00");
+    return d.toLocaleDateString("fa-IR", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  } catch {
+    return isoDay;
+  }
+}
+
+function startReply(m) {
+  state.replyTo = m;
+  state.editingId = null;
+  const rb = window.__dkReplyBar;
+  if (!rb) return;
+  rb.bar.classList.remove("hidden");
+  setText(rb.label, "پاسخ: " + (m.body || "پیام").slice(0, 60));
+  rb.input.placeholder = "پاسخ خود را بنویسید...";
+  rb.input.focus();
+}
+
+function startEdit(m) {
+  state.editingId = m.id;
+  state.replyTo = null;
+  const rb = window.__dkReplyBar;
+  if (!rb) return;
+  rb.bar.classList.remove("hidden");
+  setText(rb.label, "ویرایش پیام");
+  rb.input.value = m.body || "";
+  rb.input.placeholder = "متن جدید...";
+  rb.input.focus();
+}
+
+function openMessageMenu(m, conversationId, x, y) {
+  document.querySelectorAll(".ctx-menu").forEach((n) => n.remove());
+  const menu = el("div", { class: "ctx-menu" });
+  const mine = m.sender_id === state.profile?.id;
+  const add = (label, fn) => {
+    const b = el("button", { type: "button", text: label, onclick: () => { menu.remove(); fn(); } });
+    menu.append(b);
+  };
+  add("پاسخ", () => startReply(m));
+  add("کپی متن", async () => {
+    try {
+      await navigator.clipboard.writeText(m.body || "");
+      toast("کپی شد");
+    } catch {
+      toast("کپی ممکن نشد");
+    }
+  });
+  if (mine) {
+    add("ویرایش", () => startEdit(m));
+    add("حذف", async () => {
+      if (!confirm("این پیام حذف شود؟")) return;
+      try {
+        await deleteMessage(m.id);
+        state.messages = state.messages.filter((x) => x.id !== m.id);
+        const box = $("#messages");
+        if (box) renderMessages(box, state.messages, { conversationId });
+      } catch (e) {
+        toast(e.message || "حذف ناموفق");
+      }
+    });
+  }
+  for (const emoji of ["👍", "❤️", "😂", "🔥"]) {
+    add(emoji, async () => {
+      try {
+        await toggleReaction(m.id, emoji);
+        toast("واکنش ثبت شد");
+      } catch (e) {
+        toast(e.message || "واکنش ممکن نشد (migration 005 را اجرا کنید)");
+      }
+    });
+  }
+  document.body.append(menu);
+  const pad = 8;
+  menu.style.left = Math.min(x, window.innerWidth - 180) + "px";
+  menu.style.top = Math.min(y, window.innerHeight - 200) + "px";
+  const closer = (ev) => {
+    if (!menu.contains(ev.target)) {
+      menu.remove();
+      document.removeEventListener("click", closer);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", closer), 0);
+}
+
+async function openChatMenu(conversationId, conv) {
+  const overlay = el("div", { class: "panel-overlay" });
+  const sheet = el("div", { class: "panel sheet" });
+  const c = (state.conversations || []).find((x) => x.id === conversationId) || conv || {};
+  sheet.append(
+    el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:12px" }, [
+      el("h3", { text: "گزینه‌های گفتگو" }),
+      el("button", { class: "icon-btn", type: "button", onclick: () => overlay.remove() }, [icon("close")]),
+    ]),
+    el("button", {
+      class: "btn btn-ghost", type: "button",
+      text: c.muted ? "صدا دار کردن" : "بی‌صدا کردن",
+      onclick: async () => {
+        try {
+          await setConversationMuted(conversationId, !c.muted);
+          overlay.remove();
+          await refreshConversations();
+          toast(c.muted ? "صدا دار شد" : "بی‌صدا شد");
+        } catch (e) {
+          toast(e.message || "خطا — sql/005 را اجرا کنید");
+        }
+      },
+    }),
+    el("button", {
+      class: "btn btn-ghost", type: "button", style: "margin-top:8px",
+      text: c.archived ? "خارج از آرشیو" : "آرشیو",
+      onclick: async () => {
+        try {
+          await setConversationArchived(conversationId, !c.archived);
+          overlay.remove();
+          state.activeId = null;
+          $("#main")?.classList.remove("show-chat");
+          await refreshConversations();
+          toast(c.archived ? "از آرشیو خارج شد" : "آرشیو شد");
+        } catch (e) {
+          toast(e.message || "خطا — sql/005 را اجرا کنید");
+        }
+      },
+    }),
+  );
+  if (c.type === "group" || c.type === "channel") {
+    sheet.append(el("button", {
+      class: "btn btn-ghost", type: "button", style: "margin-top:8px", text: "اعضا",
+      onclick: () => { overlay.remove(); openMembersPanel(conversationId, c); },
+    }));
+  }
+  overlay.append(sheet);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+
 
 function openSearchPanel() {
   const overlay = el("div", { class: "panel-overlay" });

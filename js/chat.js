@@ -9,7 +9,7 @@ export async function listConversations() {
 
   const { data: memberships, error } = await sb
     .from("conversation_members")
-    .select("conversation_id, last_read_at, role, conversations:conversation_id(*)")
+    .select("conversation_id, last_read_at, role, muted, archived, pinned_at, conversations:conversation_id(*)")
     .eq("user_id", user.id);
   if (error) throw error;
 
@@ -18,9 +18,11 @@ export async function listConversations() {
       ...(m.conversations || {}),
       role: m.role,
       last_read_at: m.last_read_at,
+      muted: !!m.muted,
+      archived: !!m.archived,
+      pinned_at: m.pinned_at || null,
     }))
-    .filter((c) => c && c.id)
-    .sort((a, b) => new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0));
+    .filter((c) => c && c.id);
 
   for (const c of items) {
     if (c.type === "private") {
@@ -72,6 +74,8 @@ export async function listConversations() {
   items.sort((a, b) => {
     if (a.is_saved && !b.is_saved) return -1;
     if (!a.is_saved && b.is_saved) return 1;
+    if (a.pinned_at && !b.pinned_at) return -1;
+    if (!a.pinned_at && b.pinned_at) return 1;
     return new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0);
   });
   return items;
@@ -227,7 +231,7 @@ export async function loadMessages(conversationId, { before, limit } = {}) {
   return (data || []).reverse();
 }
 
-export async function sendMessage(conversationId, body, attachment = null, { clientId } = {}) {
+export async function sendMessage(conversationId, body, attachment = null, { clientId, replyTo } = {}) {
   const sb = getSupabase();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) throw new Error("وارد نشده‌اید.");
@@ -238,6 +242,7 @@ export async function sendMessage(conversationId, body, attachment = null, { cli
     body: (body || "").trim(),
     client_id: cid,
   };
+  if (replyTo) row.reply_to_id = replyTo;
   if (attachment) {
     row.attachment_path = attachment.path;
     row.attachment_name = attachment.name;
@@ -383,4 +388,96 @@ export async function getAttachmentUrl(path) {
   const { data, error } = await sb.storage.from("attachments").createSignedUrl(path, 3600);
   if (error) throw error;
   return data.signedUrl;
+}
+
+
+export async function editMessage(messageId, body) {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("edit_message", {
+    p_message_id: messageId,
+    p_body: body,
+  });
+  if (!error && data) return data;
+  // fallback direct update
+  const { data: { user } } = await sb.auth.getUser();
+  const { data: row, error: e2 } = await sb
+    .from("messages")
+    .update({ body: String(body || "").trim(), edited_at: new Date().toISOString() })
+    .eq("id", messageId)
+    .eq("sender_id", user.id)
+    .is("deleted_at", null)
+    .select("*, profiles:sender_id(id, username, display_name, avatar_url)")
+    .single();
+  if (e2) throw e2;
+  return row;
+}
+
+export async function deleteMessage(messageId) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("soft_delete_message", { p_message_id: messageId });
+  if (!error) return;
+  const { data: { user } } = await sb.auth.getUser();
+  const { error: e2 } = await sb
+    .from("messages")
+    .update({ deleted_at: new Date().toISOString(), body: "" })
+    .eq("id", messageId)
+    .eq("sender_id", user.id);
+  if (e2) throw e2;
+}
+
+export async function setConversationArchived(conversationId, archived) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("set_conversation_archived", {
+    p_conversation_id: conversationId,
+    p_archived: archived,
+  });
+  if (!error) return;
+  const { data: { user } } = await sb.auth.getUser();
+  const { error: e2 } = await sb
+    .from("conversation_members")
+    .update({ archived: !!archived })
+    .eq("conversation_id", conversationId)
+    .eq("user_id", user.id);
+  if (e2) throw e2;
+}
+
+export async function setConversationMuted(conversationId, muted) {
+  const sb = getSupabase();
+  const { error } = await sb.rpc("set_conversation_muted", {
+    p_conversation_id: conversationId,
+    p_muted: muted,
+  });
+  if (!error) return;
+  const { data: { user } } = await sb.auth.getUser();
+  const { error: e2 } = await sb
+    .from("conversation_members")
+    .update({ muted: !!muted })
+    .eq("conversation_id", conversationId)
+    .eq("user_id", user.id);
+  if (e2) throw e2;
+}
+
+export async function toggleReaction(messageId, emoji) {
+  const sb = getSupabase();
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) throw new Error("وارد نشده‌اید.");
+  const { data: existing } = await sb
+    .from("message_reactions")
+    .select("emoji")
+    .eq("message_id", messageId)
+    .eq("user_id", user.id)
+    .eq("emoji", emoji)
+    .maybeSingle();
+  if (existing) {
+    await sb.from("message_reactions").delete()
+      .eq("message_id", messageId).eq("user_id", user.id).eq("emoji", emoji);
+    return { removed: true };
+  }
+  const { error } = await sb.from("message_reactions").insert({
+    message_id: messageId,
+    user_id: user.id,
+    emoji,
+  });
+  if (error) throw error;
+  return { removed: false };
 }
