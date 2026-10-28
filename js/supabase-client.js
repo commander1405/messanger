@@ -13,7 +13,6 @@ export function getSupabase() {
         detectSessionInUrl: true,
         storage: window.localStorage,
         storageKey: "dk-messenger-auth",
-        flowType: "pkce",
       },
       realtime: { params: { eventsPerSecond: 12 } },
     });
