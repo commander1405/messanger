@@ -2,13 +2,6 @@ import { CONFIG } from "../config.js";
 import { getSupabase } from "./supabase-client.js";
 import { validateUsername } from "./utils.js";
 
-/** ایمیل مصنوعی فقط داخل Auth؛ کاربر آن را نمی‌بیند و در UI استفاده نمی‌شود. */
-const USER_EMAIL_DOMAIN = "users.darkknight.local";
-
-export function usernameToEmail(username) {
-  return `${String(username || "").trim().toLowerCase()}@${USER_EMAIL_DOMAIN}`;
-}
-
 export async function getSession() {
   const sb = getSupabase();
   if (!sb) return null;
@@ -19,7 +12,7 @@ export async function getSession() {
 export function onAuthChange(cb) {
   const sb = getSupabase();
   if (!sb) return { data: { subscription: { unsubscribe() {} } } };
-  return sb.auth.onAuthStateChange((_event, session) => cb(session));
+  return sb.auth.onAuthStateChange((event, session) => cb(event, session));
 }
 
 export async function signOut() {
@@ -30,11 +23,13 @@ export async function signOut() {
 
 function edgeUrl() {
   const u = (CONFIG.AUTH_EDGE_URL || "").trim();
-  return u || null;
+  if (!u) throw new Error("AUTH_EDGE_URL در config.js تنظیم نشده است.");
+  return u;
 }
 
 function edgeHeaders() {
   const key = CONFIG.SUPABASE_ANON_KEY || "";
+  if (!key) throw new Error("SUPABASE_ANON_KEY تنظیم نشده است.");
   return {
     "Content-Type": "application/json",
     apikey: key,
@@ -44,7 +39,6 @@ function edgeHeaders() {
 
 async function callAuthEdge(payload) {
   const url = edgeUrl();
-  if (!url) throw new Error("AUTH_EDGE_URL تنظیم نشده است.");
   let res;
   try {
     res = await fetch(url, {
@@ -53,14 +47,20 @@ async function callAuthEdge(payload) {
       body: JSON.stringify(payload),
     });
   } catch {
-    throw new Error("ارتباط با سرویس احراز هویت برقرار نشد. اتصال اینترنت را بررسی کنید.");
+    throw new Error("ارتباط با سرویس احراز هویت برقرار نشد.");
   }
+
   let body = {};
   try {
     body = await res.json();
   } catch {
     body = {};
   }
+
+  if (res.status === 429 || body.error === "rate_limited") {
+    throw new Error("تعداد درخواست‌ها زیاد است. یک دقیقه صبر کنید و دوباره تلاش کنید.");
+  }
+
   return { res, body };
 }
 
@@ -74,15 +74,14 @@ async function applySessionTokens(body) {
     access_token: body.access_token,
     refresh_token: body.refresh_token,
   });
-  if (error || !data.session) throw new Error("نشست برقرار نشد. دوباره تلاش کنید.");
+  if (error) {
+    console.error("setSession failed", error.message);
+    throw new Error("نشست برقرار نشد. صفحه را رفرش کنید و دوباره وارد شوید.");
+  }
+  if (!data.session) throw new Error("نشست برقرار نشد.");
   return data.session;
 }
 
-/**
- * ثبت‌نام با نام کاربری + رمز.
- * رمز فقط در Supabase Auth ذخیره می‌شود.
- * مسیر اصلی: Edge Function (بدون ارسال ایمیل تأیید و بدون rate-limit ایمیل).
- */
 export async function signUpWithUsername({ username, password, displayName, gender, country }) {
   const u = String(username || "").trim().toLowerCase();
   if (!validateUsername(u)) {
@@ -93,29 +92,22 @@ export async function signUpWithUsername({ username, password, displayName, gend
   }
   const dn = String(displayName || u).trim() || u;
 
-  if (edgeUrl()) {
-    const { res, body } = await callAuthEdge({
-      action: "signup",
-      username: u,
-      password: String(password),
-      display_name: dn,
-      gender: gender || null,
-      country: country || "",
-    });
-    if (res.status === 409 || body.error === "username_taken") {
-      throw new Error("این نام کاربری قبلاً گرفته شده است.");
-    }
-    if (res.status === 429 || body.error === "rate_limited") {
-      throw new Error("تعداد درخواست‌ها زیاد است. کمی صبر کنید و دوباره تلاش کنید.");
-    }
-    if (!res.ok) {
-      throw new Error(mapEdgeError(body.error) || "ثبت‌نام ناموفق بود. بعداً تلاش کنید.");
-    }
-    return applySessionTokens(body);
-  }
+  const { res, body } = await callAuthEdge({
+    action: "signup",
+    username: u,
+    password: String(password),
+    display_name: dn,
+    gender: gender || null,
+    country: country || "",
+  });
 
-  // Fallback بدون Edge: signup مستقیم (ممکن است با Confirm email یا rate-limit ایمیل شکست بخورد)
-  return signUpClientFallback(u, password, dn, gender, country);
+  if (res.status === 409 || body.error === "username_taken") {
+    throw new Error("این نام کاربری قبلاً گرفته شده است.");
+  }
+  if (!res.ok) {
+    throw new Error(mapEdgeError(body.error) || "ثبت‌نام ناموفق بود.");
+  }
+  return applySessionTokens(body);
 }
 
 export async function signInWithUsername(username, password) {
@@ -124,19 +116,16 @@ export async function signInWithUsername(username, password) {
     throw new Error("نام کاربری یا رمز عبور نادرست است.");
   }
 
-  if (edgeUrl()) {
-    const { res, body } = await callAuthEdge({
-      action: "login",
-      username: u,
-      password: String(password),
-    });
-    if (!res.ok) {
-      throw new Error("نام کاربری یا رمز عبور نادرست است.");
-    }
-    return applySessionTokens(body);
-  }
+  const { res, body } = await callAuthEdge({
+    action: "login",
+    username: u,
+    password: String(password),
+  });
 
-  return signInClientFallback(u, password);
+  if (!res.ok) {
+    throw new Error("نام کاربری یا رمز عبور نادرست است.");
+  }
+  return applySessionTokens(body);
 }
 
 function mapEdgeError(code) {
@@ -145,83 +134,35 @@ function mapEdgeError(code) {
       return "این نام کاربری قبلاً گرفته شده است.";
     case "invalid_credentials":
       return "نام کاربری یا رمز عبور نادرست است.";
-    case "invalid_json":
-    case "unknown_action":
-      return "درخواست نامعتبر است.";
-    case "server_misconfigured":
-      return "سرویس احراز هویت پیکربندی نشده است.";
     case "signup_failed":
       return "ثبت‌نام ناموفق بود. بعداً تلاش کنید.";
-    case "rate_limited":
-      return "تعداد درخواست‌ها زیاد است. کمی صبر کنید.";
+    case "server_misconfigured":
+      return "سرویس احراز هویت روی سرور پیکربندی نشده است.";
+    case "server_error":
+      return "خطای داخلی سرور احراز هویت.";
     default:
       return null;
   }
 }
 
-async function signUpClientFallback(u, password, dn, gender, country) {
+export async function finalizeProfileClaim(username, displayName, gender, country) {
   const sb = getSupabase();
-  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  const email = usernameToEmail(u);
-  const { data, error } = await sb.auth.signUp({
-    email,
-    password: String(password),
-    options: { data: { display_name: dn, username: u } },
-  });
-  if (error) {
-    const m = (error.message || "").toLowerCase();
-    if (m.includes("rate") || m.includes("email rate")) {
-      throw new Error(
-        "سرویس ایمیل محدودیت دارد. AUTH_EDGE_URL را در config تنظیم و Edge Function را deploy کنید."
-      );
-    }
-    if (m.includes("already") || m.includes("registered")) {
-      throw new Error("این نام کاربری قبلاً گرفته شده است.");
-    }
-    throw new Error("ثبت‌نام ناموفق بود. تنظیمات Auth را بررسی کنید.");
-  }
-  if (!data.session) {
-    throw new Error(
-      "ثبت‌نام بدون نشست بود (احتمالاً تأیید ایمیل فعال است). Confirm email را خاموش کنید یا از Edge Function استفاده کنید."
-    );
-  }
-  await claimProfileAfterAuth(u, dn, gender, country);
-  return data.session;
-}
-
-async function signInClientFallback(u, password) {
-  const sb = getSupabase();
-  if (!sb) throw new Error("Supabase پیکربندی نشده است.");
-  const { data, error } = await sb.auth.signInWithPassword({
-    email: usernameToEmail(u),
-    password: String(password),
-  });
-  if (error || !data.session) {
-    throw new Error("نام کاربری یا رمز عبور نادرست است.");
-  }
-  return data.session;
-}
-
-async function claimProfileAfterAuth(username, displayName, gender, country) {
-  const sb = getSupabase();
+  if (!sb) return;
   const { error } = await sb.rpc("claim_username", {
     p_username: username,
     p_display_name: displayName,
     p_gender: gender || null,
     p_country: country || "",
   });
-  if (!error) return;
-  const { data: { user } } = await sb.auth.getUser();
-  if (!user) return;
-  await sb.from("profiles").upsert({
-    id: user.id,
-    username,
-    display_name: displayName,
-    gender: gender || null,
-    country: country || "",
-  });
-}
-
-export async function finalizeProfileClaim(username, displayName, gender, country) {
-  return claimProfileAfterAuth(username, displayName, gender, country);
+  if (error) {
+    const { data: { user } } = await sb.auth.getUser();
+    if (!user) return;
+    await sb.from("profiles").upsert({
+      id: user.id,
+      username,
+      display_name: displayName,
+      gender: gender || null,
+      country: country || "",
+    });
+  }
 }

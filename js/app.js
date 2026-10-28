@@ -35,27 +35,62 @@ export async function boot() {
     root.replaceChildren(renderSetupScreen());
     return;
   }
-  onAuthChange(async (session) => {
-    state.session = session;
-    if (session) {
+
+  setupConnectivityBanner();
+
+  let handling = false;
+  async function enterApp() {
+    if (handling) return;
+    handling = true;
+    try {
+      state.session = await getSession();
+      if (!state.session) {
+        root.replaceChildren(renderAuthScreen());
+        return;
+      }
       try {
         state.profile = await ensureProfile();
-        if (!state.profile?.username) {
-          root.replaceChildren(renderUsernameGate());
-          return;
-        }
-        await showMain();
       } catch (e) {
-        root.replaceChildren(renderAuthScreen(faAuthError(e)));
+        console.error("ensureProfile", e);
+        root.replaceChildren(renderAuthScreen(
+          "پروفایل بارگذاری نشد. اگر تازه دیتابیس ساخته‌اید، migrationهای SQL را اجرا کنید. " + (e.message || "")
+        ));
+        return;
       }
+      if (!state.profile?.username) {
+        root.replaceChildren(renderUsernameGate());
+        return;
+      }
+      await showMain();
+    } finally {
+      handling = false;
+    }
+  }
+
+  // بازیابی نشست ذخیره‌شده
+  const existing = await getSession();
+  if (existing) {
+    await enterApp();
+  } else {
+    root.replaceChildren(renderAuthScreen());
+  }
+
+  // رویدادهای بعدی (ورود/خروج) — INITIAL_SESSION را نادیده می‌گیریم تا دوبار رندر نشود
+  onAuthChange(async (event, session) => {
+    if (event === "INITIAL_SESSION") return;
+    state.session = session;
+    if (session) {
+      await enterApp();
     } else {
+      if (state.presenceStop) {
+        try { state.presenceStop(); } catch (_) {}
+        state.presenceStop = null;
+      }
+      if (state.unsubMsg) { try { state.unsubMsg(); } catch (_) {} state.unsubMsg = null; }
+      if (state.unsubTyping) { try { state.unsubTyping(); } catch (_) {} state.unsubTyping = null; }
       root.replaceChildren(renderAuthScreen());
     }
   });
-  setupConnectivityBanner();
-  const session = await getSession();
-  state.session = session;
-  if (!session) root.replaceChildren(renderAuthScreen());
 }
 
 function setupConnectivityBanner() {
@@ -209,11 +244,18 @@ function renderAuthScreen(errMsg = "") {
               $("#gender")?.value || null,
               $("#country")?.value || "",
             );
-          } catch (_) {
-            /* profile may already exist via edge */
-          }
+          } catch (_) { /* profile ممکن است از Edge آمده باشد */ }
         } else {
           await signInWithUsername($("#uname").value, $("#pw").value);
+        }
+        // هدایت صریح بعد از موفقیت (وابسته نبودن فقط به onAuthChange)
+        const appRoot = document.getElementById("app");
+        state.session = await getSession();
+        state.profile = await ensureProfile();
+        if (!state.profile?.username) {
+          appRoot.replaceChildren(renderUsernameGate());
+        } else {
+          await showMain();
         }
       } catch (e) {
         showErr(e.message || "خطا در احراز هویت");
@@ -277,6 +319,7 @@ async function showMain() {
   const header = el("div", { class: "sidebar-header" }, [
     el("img", { class: "logo", src: assetUrl("assets/logo.svg"), alt: "" }),
     el("h2", { text: CONFIG.APP_SHORT }),
+    el("span", { style: "color:var(--text-dim);font-size:0.8rem;margin-left:auto", text: state.profile?.username ? ("@" + state.profile.username) : "" }),
     el("button", {
       class: "icon-btn", title: "جستجو و گفتگوی جدید", type: "button",
       onclick: () => openSearchPanel(),
